@@ -112,7 +112,6 @@ paddleocr-vl-runpod/
 ```
 
 File responsibilities
-
 Dockerfile
 
 Builds the GPU container.
@@ -149,7 +148,6 @@ download size limit
 logging
 output settings
 cache directories
-
 pdf_processor.py
 
 Handles input files.
@@ -165,7 +163,6 @@ image validation
 PDF page count
 maximum PDF page limit
 cleanup
-
 handler.py
 
 Main RunPod Serverless worker.
@@ -180,7 +177,6 @@ restructure multi-page documents
 produce Markdown
 produce JSON
 return the RunPod response
-
 start.sh
 
 Container entrypoint.
@@ -195,7 +191,6 @@ verify CUDA
 verify GPU
 display GPU information
 start the RunPod worker
-
 .github/workflows/docker.yml
 
 GitHub Actions workflow.
@@ -213,9 +208,7 @@ GHCR
 The image is published to:
 
 ghcr.io/<github-user>/<repository>
-
 Requirements
-
 Hardware
 
 Recommended:
@@ -232,14 +225,12 @@ Development:
 Git
 Docker
 NVIDIA Container Toolkit
-
 Python is optional because the application runs inside Docker
 
 Deployment:
 
 RunPod account
 RunPod Serverless endpoint
-
 PaddleOCR-VL
 
 This project uses:
@@ -263,7 +254,6 @@ Configuration
 All runtime configuration is controlled through environment variables.
 
 PaddleOCR
-
 PADDLEOCR_PIPELINE_VERSION=v1.6
 
 PADDLEOCR_DEVICE=gpu
@@ -272,9 +262,7 @@ Default:
 
 PADDLEOCR_PIPELINE_VERSION=v1.6
 PADDLEOCR_DEVICE=gpu
-
 Multi-page restructuring
-
 PADDLEOCR_MERGE_TABLES=true
 
 PADDLEOCR_RELEVEL_TITLES=true
@@ -295,9 +283,7 @@ pipeline.restructure_pages(
     relevel_titles=True,
     concatenate_pages=True,
 )
-
 PDF limit
-
 MAX_PDF_PAGES=500
 
 Default:
@@ -307,7 +293,6 @@ Default:
 A PDF exceeding this limit is rejected before OCR processing begins.
 
 Download limit
-
 MAX_DOWNLOAD_SIZE_MB=500
 
 Default:
@@ -317,17 +302,14 @@ Default:
 The limit is enforced during streaming download.
 
 Output
-
 RETURN_JSON=true
 
 Set:
 
 RETURN_JSON=false
-
 if only Markdown output is required.
 
 Logging
-
 LOG_LEVEL=INFO
 
 Possible examples:
@@ -336,7 +318,6 @@ DEBUG
 INFO
 WARNING
 ERROR
-
 Cache
 
 PaddleX cache:
@@ -346,7 +327,6 @@ PADDLE_PDX_CACHE_HOME=/app/.paddlex
 Hugging Face cache:
 
 HF_HOME=/app/.huggingface
-
 RunPod input
 
 The worker supports two input types.
@@ -362,7 +342,6 @@ Request:
     "image_url": "https://example.com/document.png"
   }
 }
-
 PDF
 
 Request:
@@ -372,9 +351,7 @@ Request:
     "pdf_url": "https://example.com/document.pdf"
   }
 }
-
 Example PDF response
-
 {
   "success": true,
   "type": "pdf",
@@ -395,15 +372,12 @@ the response also contains:
     }
   ]
 }
-
 Example image response
-
 {
   "success": true,
   "type": "image",
   "markdown": "<!-- Result 1 -->..."
 }
-
 Error response
 
 Example:
@@ -412,7 +386,6 @@ Example:
   "success": false,
   "error": "PDF contains 600 pages, but MAX_PDF_PAGES is 500."
 }
-
 Local Docker build
 
 Build:
@@ -472,7 +445,6 @@ Pushes the image to GHCR.
 Uses GitHub Actions cache.
 Generates provenance metadata.
 Generates an SBOM.
-
 RunPod deployment
 
 After GitHub Actions successfully publishes the image:
@@ -584,7 +556,7 @@ PaddleOCR-VL 1.6
            RAG
              │
              ▼
-      Question / Answer
+       Question / Answer
 
 Markdown is intended to preserve document structure such as:
 
@@ -632,7 +604,6 @@ vLLM backend
 SGLang backend
 Open Notebook integration
 Direct document ingestion pipeline
-
 Backend strategy
 
 Initial backend:
