@@ -45,10 +45,24 @@ RUN python3 -m pip install \
 # This layer is intentionally placed BEFORE "COPY . /app/" so that code
 # changes do not invalidate the large model layer on registry pulls.
 #
-# The build runner has no GPU, so the download runs on CPU; the weights
-# are device-agnostic and are loaded onto the GPU at runtime.
-RUN python3 -c "from paddleocr import PaddleOCRVL; PaddleOCRVL(pipeline_version='v1.6', device='cpu')" \
-    && du -sh /app/.paddlex /app/.huggingface
+# NOTE: the GitHub Actions runner has no NVIDIA driver, and paddlepaddle-gpu
+# cannot even be imported there: libpaddle is linked against libcuda.so.1,
+# which only exists on machines with the NVIDIA driver installed.
+# device="cpu" does not help because the import itself fails before any
+# device selection happens (see CI run #9).
+#
+# Fix: run the download with the CPU build of PaddlePaddle installed into a
+# throwaway directory that shadows the GPU build via PYTHONPATH. The model
+# files it downloads are identical, device-agnostic weights that the GPU
+# build loads at runtime. The directory is deleted afterwards so it does not
+# bloat the image.
+RUN pip install --no-cache-dir --target /opt/bake-deps \
+        "paddlepaddle>=3.2,<3.3" \
+        "paddleocr[doc-parser]==3.6.0" \
+    && PYTHONPATH=/opt/bake-deps \
+       python3 -c "from paddleocr import PaddleOCRVL; PaddleOCRVL(pipeline_version='v1.6', device='cpu')" \
+    && du -sh /app/.paddlex /app/.huggingface \
+    && rm -rf /opt/bake-deps
 
 COPY . /app/
 
