@@ -307,6 +307,7 @@ RETURN_JSON=true
 Set:
 
 RETURN_JSON=false
+
 if only Markdown output is required.
 
 Logging
