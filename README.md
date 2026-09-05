@@ -1,53 +1,96 @@
-# PaddleOCR-VL 1.6 — RunPod Serverless
+# PaddleOCR-VL 1.6 — RunPod Serverless Worker
 
-RunPod Serverless worker untuk menjalankan **PaddleOCR-VL 1.6** dari Hugging Face.
+RunPod Serverless worker untuk menjalankan **PaddleOCR-VL 1.6** pada GPU.
 
-Worker ini dirancang untuk memproses:
+Worker menerima:
 
-- Image
-- PDF
-- PDF multi-page
-- Dokumen hasil scan
-- OCR + document parsing
-- Output Markdown
-- Output JSON
+- URL PDF
+- URL image
 
-Hasil Markdown dapat digunakan sebagai input untuk sistem RAG seperti Open Notebook.
+dan mengembalikan:
 
----
+- Markdown
+- Structured JSON
+- jumlah halaman untuk PDF
 
-## Architecture
+Target utama project ini adalah OCR dan document parsing untuk dokumen hasil scan yang kemudian dapat digunakan oleh sistem RAG seperti Open Notebook.
 
-```
-                    ┌─────────────────────┐
-                    │      RunPod         │
-                    │     Serverless      │
-                    └──────────┬──────────┘
-                               │
-                               │ Job
-                               ▼
-                    ┌─────────────────────┐
-                    │   PaddleOCR-VL 1.6  │
-                    │                     │
-                    │ PaddleOCR Pipeline  │
-                    └──────────┬──────────┘
-                               │
-                ┌──────────────┴──────────────┐
-                │                             │
-                ▼                             ▼
-             Markdown                       JSON
-                │                             │
-                └──────────────┬──────────────┘
-                               │
-                               ▼
-                         RAG / Open Notebook
-````
 
----
+## Features
 
-# Project Structure
+- PaddleOCR-VL 1.6
+- PaddlePaddle GPU
+- CUDA 12.6
+- RunPod Serverless
+- PDF processing
+- Image processing
+- Markdown output
+- Structured JSON output
+- Multi-page document restructuring
+- Table merging
+- Title re-leveling
+- Page concatenation
+- Download size protection
+- PDF page limit
+- Per-job temporary directory
+- GPU validation at startup
+- Docker
+- GitHub Actions
+- GitHub Container Registry (GHCR)
+
+
+# Architecture
 
 ```text
+                  ┌─────────────────────┐
+                  │      Client         │
+                  │                     │
+                  │  PDF URL / Image URL│
+                  └──────────┬──────────┘
+                             │
+                             ▼
+                  ┌─────────────────────┐
+                  │ RunPod Serverless   │
+                  │                     │
+                  │  PaddleOCR-VL 1.6   │
+                  └──────────┬──────────┘
+                             │
+                             ▼
+                  ┌─────────────────────┐
+                  │      Download       │
+                  │                     │
+                  │  PDF / Image        │
+                  └──────────┬──────────┘
+                             │
+                             ▼
+                  ┌─────────────────────┐
+                  │       Validate      │
+                  │                     │
+                  │  size / format /    │
+                  │  page count         │
+                  └──────────┬──────────┘
+                             │
+                             ▼
+                  ┌─────────────────────┐
+                  │    PaddleOCR-VL     │
+                  │                     │
+                  │ document parsing    │
+                  │ OCR / layout / etc. │
+                  └──────────┬──────────┘
+                             │
+                             ▼
+                  ┌─────────────────────┐
+                  │   Multi-page        │
+                  │   restructuring     │
+                  └──────────┬──────────┘
+                             │
+                             ▼
+                  ┌─────────────────────┐
+                  │       Output        │
+                  │                     │
+                  │ Markdown + JSON     │
+                  └─────────────────────┘
+Project structure
 paddleocr-vl-runpod/
 │
 ├── Dockerfile
@@ -62,623 +105,533 @@ paddleocr-vl-runpod/
 └── .github/
     └── workflows/
         └── docker.yml
-```
+File responsibilities
+Dockerfile
 
----
+Builds the GPU container.
 
-# PaddleOCR-VL Model
+Main components:
 
-Model yang digunakan:
+CUDA 12.6
+PaddlePaddle GPU 3.2.1
+PaddleOCR
+RunPod
+Python dependencies
 
-```text
-PaddlePaddle/PaddleOCR-VL-1.6
-```
+The PaddleOCR-VL model itself is downloaded during worker initialization rather than being baked into the Docker image.
 
-Model version:
+requirements.txt
 
-```text
-PaddleOCR-VL-1.6-0.9B
-```
+Contains Python dependencies that are installed through pip.
 
-Pipeline version:
+The PaddlePaddle GPU package is installed separately because it uses the official PaddlePaddle CUDA package repository.
 
-```text
-v1.6
-```
+config.py
 
----
+Centralizes configuration.
 
-# Requirements
+Configuration is controlled through environment variables.
 
-Worker menggunakan:
+It contains:
 
-* NVIDIA CUDA 12.6
-* PaddlePaddle GPU 3.2.1
-* PaddleOCR 3.6+
-* Python 3
-* RunPod Serverless
-* PyMuPDF
-* Pillow
+PaddleOCR pipeline version
+device
+restructuring settings
+PDF page limit
+download size limit
+logging
+output settings
+cache directories
+pdf_processor.py
 
-GPU yang digunakan harus kompatibel dengan CUDA/PaddlePaddle.
+Handles input files.
 
-Untuk performa yang baik, gunakan GPU dengan VRAM yang memadai untuk seluruh pipeline PaddleOCR-VL.
+Responsibilities:
 
----
+download URL
+download size limit
+URL validation
+temporary storage
+PDF validation
+image validation
+PDF page count
+maximum PDF page limit
+cleanup
+handler.py
 
-# Local Docker Build
+Main RunPod Serverless worker.
 
-Build image:
+Responsibilities:
 
-```bash
-docker build -t paddleocr-vl-runpod .
-```
+initialize PaddleOCR-VL
+receive RunPod jobs
+process images
+process PDFs
+restructure multi-page documents
+produce Markdown
+produce JSON
+return the RunPod response
+start.sh
 
-Run container:
+Container entrypoint.
 
-```bash
-docker run --rm \
-  --gpus all \
-  -e PADDLEOCR_DEVICE=gpu \
-  paddleocr-vl-runpod
-```
+Responsibilities:
 
-Container akan menjalankan RunPod Serverless worker.
+set environment defaults
+create cache directories
+verify Python
+verify PaddlePaddle
+verify CUDA
+verify GPU
+display GPU information
+start the RunPod worker
+.github/workflows/docker.yml
 
----
+GitHub Actions workflow.
 
-# Environment Variables
+Every push to main:
 
-Semua konfigurasi utama dapat diubah melalui environment variable.
+GitHub
+   ↓
+GitHub Actions
+   ↓
+Docker build
+   ↓
+GHCR
 
-## PaddleOCR
+The image is published to:
 
-### `PADDLEOCR_PIPELINE_VERSION`
+ghcr.io/<github-user>/<repository>
+Requirements
+Hardware
+
+Recommended:
+
+NVIDIA GPU
+CUDA-compatible environment
+
+For large scanned documents, more VRAM is preferable.
+
+Software
+
+Development:
+
+Git
+Docker
+NVIDIA Container Toolkit
+Python is optional because the application runs inside Docker
+
+Deployment:
+
+RunPod account
+RunPod Serverless endpoint
+PaddleOCR-VL
+
+This project uses:
+
+PaddleOCR-VL 1.6
+
+Pipeline:
+
+from paddleocr import PaddleOCRVL
+
+pipeline = PaddleOCRVL(
+    pipeline_version="v1.6",
+)
+
+PaddleOCR-VL supports document images and PDF input.
+
+For PDFs, PaddleOCR-VL processes the document page by page and can subsequently restructure the page results into a multi-page document.
+
+Configuration
+
+All runtime configuration is controlled through environment variables.
+
+PaddleOCR
+PADDLEOCR_PIPELINE_VERSION=v1.6
+
+PADDLEOCR_DEVICE=gpu
 
 Default:
 
-```text
-v1.6
-```
+PADDLEOCR_PIPELINE_VERSION=v1.6
+PADDLEOCR_DEVICE=gpu
+Multi-page restructuring
+PADDLEOCR_MERGE_TABLES=true
 
-Contoh:
+PADDLEOCR_RELEVEL_TITLES=true
 
-```bash
--e PADDLEOCR_PIPELINE_VERSION=v1.6
-```
+PADDLEOCR_CONCATENATE_PAGES=true
 
----
+Defaults:
 
-### `PADDLEOCR_DEVICE`
+PADDLEOCR_MERGE_TABLES=true
+PADDLEOCR_RELEVEL_TITLES=true
+PADDLEOCR_CONCATENATE_PAGES=true
 
-Default:
+These settings are passed to:
 
-```text
-gpu
-```
-
-Contoh:
-
-```bash
--e PADDLEOCR_DEVICE=gpu
-```
-
-Untuk CPU:
-
-```bash
--e PADDLEOCR_DEVICE=cpu
-```
-
-CPU tidak direkomendasikan untuk production inference.
-
----
-
-# PDF Configuration
-
-## `MAX_PDF_PAGES`
+pipeline.restructure_pages(
+    pages,
+    merge_tables=True,
+    relevel_titles=True,
+    concatenate_pages=True,
+)
+PDF limit
+MAX_PDF_PAGES=500
 
 Default:
 
-```text
-0
-```
+500
 
-Artinya tidak ada batas jumlah halaman.
+A PDF exceeding this limit is rejected before OCR processing begins.
 
-Contoh:
-
-```bash
--e MAX_PDF_PAGES=10
-```
-
-Hanya memproses maksimal 10 halaman.
-
----
-
-# Output
-
-## `OUTPUT_FORMAT`
+Download limit
+MAX_DOWNLOAD_SIZE_MB=500
 
 Default:
 
-```text
-markdown
-```
+500 MB
 
----
+The limit is enforced during streaming download.
 
-## `RETURN_JSON`
+Output
+RETURN_JSON=true
 
-Default:
+Set:
 
-```text
-true
-```
+RETURN_JSON=false
 
-Jika:
+if only Markdown output is required.
 
-```text
-true
-```
+Logging
+LOG_LEVEL=INFO
 
-worker akan mengembalikan Markdown dan JSON.
+Possible examples:
 
-Jika:
+DEBUG
+INFO
+WARNING
+ERROR
+Cache
 
-```text
-false
-```
+PaddleX cache:
 
-worker hanya mengembalikan Markdown.
+PADDLE_PDX_CACHE_HOME=/app/.paddlex
 
----
+Hugging Face cache:
 
-# Temporary Storage
+HF_HOME=/app/.huggingface
+RunPod input
 
-## `TEMP_DIR`
+The worker supports two input types.
 
-Default:
+Only one should be supplied per job.
 
-```text
-/tmp/paddleocr
-```
+Image
 
----
+Request:
 
-## Hugging Face Cache
-
-## `HF_HOME`
-
-Default:
-
-```text
-/tmp/huggingface
-```
-
----
-
-## Paddle Cache
-
-## `PADDLE_HOME`
-
-Default:
-
-```text
-/tmp/paddle
-```
-
----
-
-# RunPod Input
-
-Worker menerima dua jenis input:
-
-```text
-image_url
-```
-
-atau:
-
-```text
-pdf_url
-```
-
-Tidak boleh mengirim keduanya sekaligus.
-
----
-
-# Image Example
-
-Input:
-
-```json
 {
   "input": {
     "image_url": "https://example.com/document.png"
   }
 }
-```
+PDF
 
-Worker akan:
+Request:
 
-```text
-Download image
-      ↓
-PaddleOCR-VL
-      ↓
-Markdown + JSON
-```
-
----
-
-# PDF Example
-
-Input:
-
-```json
 {
   "input": {
     "pdf_url": "https://example.com/document.pdf"
   }
 }
-```
-
-Worker akan:
-
-```text
-Download PDF
-      ↓
-Render PDF page
-      ↓
-Page image
-      ↓
-PaddleOCR-VL
-      ↓
-Next page
-      ↓
-...
-      ↓
-Markdown + JSON
-```
-
----
-
-# Example Response
-
-Contoh response:
-
-```json
+Example PDF response
 {
   "success": true,
   "type": "pdf",
-  "pages": 3,
-  "markdown": "<!-- Page 1 -->\n\n# Judul Dokumen\n\n...",
+  "pages": 10,
+  "markdown": "<!-- Result 1 -->..."
+}
+
+When:
+
+RETURN_JSON=true
+
+the response also contains:
+
+{
   "results": [
     {
-      "page": 1,
-      "results": []
+      "result": {}
     }
   ]
 }
-```
+Example image response
+{
+  "success": true,
+  "type": "image",
+  "markdown": "<!-- Result 1 -->..."
+}
+Error response
 
-Struktur JSON aktual dapat berbeda tergantung versi PaddleOCR/PaddleX yang digunakan.
+Example:
 
----
+{
+  "success": false,
+  "error": "PDF contains 600 pages, but MAX_PDF_PAGES is 500."
+}
+Local Docker build
 
-# Markdown Output
+Build:
 
-Markdown digunakan sebagai format utama untuk RAG.
+docker build -t paddleocr-vl-runpod .
 
-Contoh:
+Run:
 
-```markdown
-<!-- Page 1 -->
+docker run --rm \
+  --gpus all \
+  -p 8000:8000 \
+  paddleocr-vl-runpod
 
-# Judul Dokumen
+The RunPod worker does not require port 8000 for normal Serverless operation. The command above is primarily useful for testing container startup and GPU detection.
 
-Isi dokumen...
+GPU test
 
-## Bab 1
+Before running the worker, verify Docker can access the GPU:
 
-Materi pembelajaran...
+docker run --rm \
+  --gpus all \
+  nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04 \
+  nvidia-smi
 
-<!-- Page 2 -->
+You should see the NVIDIA GPU information.
 
-Tabel:
+GitHub Container Registry
 
-| No | Nama | Nilai |
-|---|---|---|
-| 1 | A | 90 |
-| 2 | B | 85 |
-```
+The GitHub Actions workflow publishes the Docker image to:
 
-Format ini dapat diteruskan ke sistem seperti:
+ghcr.io/<github-user>/<repository>:latest
 
-```text
-PaddleOCR-VL
-      ↓
-Markdown
-      ↓
-Open Notebook
-      ↓
-Embedding
-      ↓
-Vector Database
-      ↓
-RAG
-```
+A commit-specific image is also created using the Git SHA.
 
----
-
-# GitHub Container Registry
-
-GitHub Actions akan otomatis membuat Docker image dan push ke:
-
-```text
-ghcr.io/<github-user>/<repository>
-```
-
-Contoh:
-
-```text
-ghcr.io/karem505/paddleocr-vl-runpod
-```
+GitHub Actions
 
 Workflow:
 
-```text
-git push
-   ↓
-GitHub Actions
-   ↓
-Docker Build
-   ↓
-GHCR
-```
+.github/workflows/docker.yml
 
----
+Triggered by:
 
-# Docker Image Tags
+push → main
 
-Setiap build menghasilkan:
+or manually using:
 
-```text
-latest
-```
+workflow_dispatch
 
-dan tag berdasarkan commit SHA:
+The workflow:
 
-```text
-sha-xxxxxxxx
-```
+Checks out the repository.
+Logs into GHCR.
+Sets up Docker Buildx.
+Generates image metadata.
+Builds the Docker image.
+Pushes the image to GHCR.
+Uses GitHub Actions cache.
+Generates provenance metadata.
+Generates an SBOM.
+RunPod deployment
 
-Contoh:
+After GitHub Actions successfully publishes the image:
 
-```text
-ghcr.io/karem505/paddleocr-vl-runpod:latest
-```
-
-atau:
-
-```text
-ghcr.io/karem505/paddleocr-vl-runpod:sha-a1b2c3d
-```
-
-Untuk RunPod, gunakan:
-
-```text
-ghcr.io/karem505/paddleocr-vl-runpod:latest
-```
-
----
-
-# RunPod Deployment
-
-Setelah image tersedia di GHCR:
-
-```text
-RunPod
-   ↓
-Serverless
-   ↓
-New Endpoint
-   ↓
-Custom Docker Image
-```
-
-Docker image:
-
-```text
-ghcr.io/<github-user>/<repository>:latest
-```
-
-Pilih GPU yang kompatibel.
-
-Worker tidak membutuhkan HTTP server manual.
-
-RunPod Serverless akan berkomunikasi dengan:
-
-```python
-runpod.serverless.start(
-    {
-        "handler": handler
-    }
-)
-```
-
----
-
-# Model Download
-
-Model PaddleOCR-VL akan di-download secara otomatis ketika pipeline pertama kali dijalankan jika model belum tersedia di cache.
-
-Karena itu:
-
-```text
-Container startup
-       ↓
-PaddleOCR initialization
-       ↓
-Download model
-       ↓
-Load model
-       ↓
-Worker ready
-```
-
-Cold start pertama dapat lebih lama dibandingkan job berikutnya.
-
----
-
-# Recommended Production Flow
-
-Untuk dokumen besar:
-
-```text
-PDF
- │
- ▼
-RunPod Serverless
- │
- ▼
-PDF → Pages
- │
- ▼
-PaddleOCR-VL 1.6
- │
- ├── OCR
- ├── Layout
- ├── Tables
- └── Document parsing
- │
- ▼
-Markdown
- │
- ▼
-Open Notebook
- │
- ▼
-Embedding
- │
- ▼
-RAG
-```
-
----
-
-# Large PDF
-
-Worker dapat menerima PDF multi-page.
-
-Contoh:
-
-```text
-450 pages
-```
-
-akan diproses:
-
-```text
-Page 1
-Page 2
-Page 3
-...
-Page 450
-```
-
-Secara berurutan.
-
-Untuk dokumen yang sangat besar, disarankan menggunakan batching/chunking sehingga satu RunPod job tidak terlalu besar.
-
----
-
-# Development Roadmap
-
-## Phase 1 — Basic Worker
-
-```text
 GitHub
-  ↓
+   ↓
 GHCR
-  ↓
-RunPod
-  ↓
-PaddleOCR-VL
-```
+   ↓
+RunPod Serverless
 
-## Phase 2 — PDF Optimization
+Use the GHCR image:
 
-Menambahkan:
+ghcr.io/<github-user>/<repository>:latest
 
-* configurable DPI
-* streaming page processing
-* page batching
-* memory optimization
-* automatic cleanup
+Create a RunPod Serverless endpoint using the container image.
 
-## Phase 3 — Storage
+Recommended initial settings
 
-Output dapat disimpan ke object storage:
+For the first test:
 
-```text
-RunPod
-  ↓
-OCR
-  ↓
-Markdown / JSON
-  ↓
-Object Storage
-```
+PADDLEOCR_PIPELINE_VERSION=v1.6
+PADDLEOCR_DEVICE=gpu
 
-## Phase 4 — Open Notebook Integration
+PADDLEOCR_MERGE_TABLES=true
+PADDLEOCR_RELEVEL_TITLES=true
+PADDLEOCR_CONCATENATE_PAGES=true
 
-```text
+MAX_PDF_PAGES=500
+MAX_DOWNLOAD_SIZE_MB=500
+
+RETURN_JSON=true
+LOG_LEVEL=INFO
+
+Use a GPU with enough VRAM for PaddleOCR-VL 1.6.
+
+First deployment test
+
+Do not immediately test a 450-page PDF.
+
+Start with:
+
+1 image
+
+Then:
+
+1-page PDF
+
+Then:
+
+5-page PDF
+
+Then:
+
+10-page PDF
+
+Only after those tests succeed should large documents be tested.
+
+Large PDF strategy
+
+The current implementation intentionally processes the PDF directly through:
+
+pipeline.predict(
+    input=str(pdf_path),
+)
+
+This follows the native PaddleOCR-VL PDF processing API.
+
+For very large documents, such as:
+
+300–500 pages
+
+a future version can introduce:
+
 PDF
  ↓
-RunPod OCR
+split into batches
  ↓
-Markdown
+PaddleOCR-VL
  ↓
-Open Notebook
+save intermediate results
  ↓
-RAG
-```
+merge Markdown
+ ↓
+merge JSON
 
----
+This would make the worker more suitable for very large RAG ingestion jobs.
 
-# Important
+RAG workflow
 
-Versi pertama worker menggunakan **native PaddleOCR-VL backend**.
+The intended architecture is:
 
-vLLM belum digunakan.
-
-Tujuannya adalah memastikan terlebih dahulu bahwa:
-
-```text
-PaddleOCR-VL 1.6
-+
-PaddlePaddle GPU
-+
+Scanned PDF
+      │
+      ▼
 RunPod Serverless
-+
-PDF processing
-```
+      │
+      ▼
+PaddleOCR-VL 1.6
+      │
+      ├──────────────┐
+      ▼              ▼
+   Markdown         JSON
+      │              │
+      └──────┬───────┘
+             ▼
+       Open Notebook
+             │
+             ▼
+           RAG
+             │
+             ▼
+       Question / Answer
 
-berjalan dengan benar.
+Markdown is intended to preserve document structure such as:
 
-Setelah pipeline dasar stabil, backend inference dapat dioptimalkan menggunakan vLLM/SGLang jika diperlukan.
+headings
+paragraphs
+tables
+lists
+document layout information
 
----
+Structured JSON can be used when downstream processing needs more detailed document information.
 
-# License
+Security considerations
 
-Refer to the licenses of:
+The worker currently provides several basic protections:
 
-* PaddleOCR
-* PaddlePaddle
-* PaddleOCR-VL
-* Hugging Face model
-* Third-party dependencies
+HTTP/HTTPS-only URLs
+streamed downloads
+download size limit
+PDF validation
+image validation
+PDF page limit
+isolated temporary directory per job
+cleanup after each job
 
-Check the individual project/model licenses before commercial deployment.
+The worker should still be deployed behind RunPod authentication and should not be treated as an unrestricted public file-fetching service.
+
+Model cache
+
+The first worker startup may take longer because PaddleOCR/PaddleX may need to download model files.
+
+Subsequent startup behavior depends on the persistence of the container/cache storage provided by the deployment environment.
+
+Future improvements
+
+Planned improvements:
+
+Large-PDF batching
+Persistent model cache
+Object storage output
+Result files instead of returning huge JSON responses
+Webhook/callback support
+Page-range processing
+Retry handling
+Job progress reporting
+vLLM backend
+SGLang backend
+Open Notebook integration
+Direct document ingestion pipeline
+Backend strategy
+
+Initial backend:
+
+PaddleOCR-VL native
+
+This is intentional.
+
+The first goal is to make the complete pipeline reliable:
+
+RunPod
+ ↓
+PaddleOCR-VL
+ ↓
+OCR
+ ↓
+document parsing
+ ↓
+Markdown / JSON
+
+After that is stable, the inference backend can be optimized with:
+
+vLLM
+
+or:
+
+SGLang
+
+without redesigning the external RunPod API.
+
+License
+
+This project is intended to use the PaddleOCR-VL 1.6 model and PaddleOCR ecosystem.
+
+Check the upstream PaddleOCR/PaddleOCR-VL licenses and terms before redistributing the model or deploying it commercially.

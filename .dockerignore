@@ -1,3 +1,4 @@
+```text
 # ============================================================
 # Git
 # ============================================================
@@ -20,10 +21,8 @@
 
 __pycache__
 **/__pycache__
-
 *.py[cod]
 *$py.class
-
 *.so
 
 .pytest_cache
@@ -58,7 +57,6 @@ build
 
 .vscode
 .idea
-
 .DS_Store
 Thumbs.db
 
@@ -77,6 +75,7 @@ logs/
 
 tmp/
 temp/
+
 output/
 outputs/
 
@@ -121,3 +120,4 @@ paddlex/
 Dockerfile.*
 docker-compose*.yml
 docker-compose*.yaml
+```

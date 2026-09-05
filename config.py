@@ -1,7 +1,19 @@
+```python
 import os
 
 
-def get_bool(name: str, default: bool) -> bool:
+# ---------------------------------------------------------------------------
+# Environment helpers
+# ---------------------------------------------------------------------------
+
+def get_bool(
+    name: str,
+    default: bool,
+) -> bool:
+    """
+    Read a boolean environment variable.
+    """
+
     value = os.getenv(name)
 
     if value is None:
@@ -14,6 +26,30 @@ def get_bool(name: str, default: bool) -> bool:
         "y",
         "on",
     }
+
+
+def get_int(
+    name: str,
+    default: int,
+) -> int:
+    """
+    Read an integer environment variable.
+    """
+
+    value = os.getenv(name)
+
+    if value is None:
+        return default
+
+    try:
+        return int(value)
+
+    except ValueError as exc:
+
+        raise ValueError(
+            f"Environment variable {name} "
+            f"must be an integer."
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +68,41 @@ DEVICE = os.getenv(
 
 
 # ---------------------------------------------------------------------------
+# Multi-page document restructuring
+# ---------------------------------------------------------------------------
+
+MERGE_TABLES = get_bool(
+    "PADDLEOCR_MERGE_TABLES",
+    True,
+)
+
+RELEVEL_TITLES = get_bool(
+    "PADDLEOCR_RELEVEL_TITLES",
+    True,
+)
+
+CONCATENATE_PAGES = get_bool(
+    "PADDLEOCR_CONCATENATE_PAGES",
+    True,
+)
+
+
+# ---------------------------------------------------------------------------
+# PDF processing
+# ---------------------------------------------------------------------------
+
+MAX_PDF_PAGES = get_int(
+    "MAX_PDF_PAGES",
+    500,
+)
+
+if MAX_PDF_PAGES <= 0:
+    raise ValueError(
+        "MAX_PDF_PAGES must be greater than 0."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Worker
 # ---------------------------------------------------------------------------
 
@@ -42,20 +113,8 @@ LOG_LEVEL = os.getenv(
 
 
 # ---------------------------------------------------------------------------
-# Input / output
+# Output
 # ---------------------------------------------------------------------------
-
-MAX_PDF_PAGES = int(
-    os.getenv(
-        "MAX_PDF_PAGES",
-        "0",
-    )
-)
-
-OUTPUT_FORMAT = os.getenv(
-    "OUTPUT_FORMAT",
-    "markdown",
-)
 
 RETURN_JSON = get_bool(
     "RETURN_JSON",
@@ -64,7 +123,7 @@ RETURN_JSON = get_bool(
 
 
 # ---------------------------------------------------------------------------
-# Temporary files
+# Temporary storage
 # ---------------------------------------------------------------------------
 
 TEMP_DIR = os.getenv(
@@ -74,15 +133,31 @@ TEMP_DIR = os.getenv(
 
 
 # ---------------------------------------------------------------------------
-# Model/cache
+# Model/cache directories
 # ---------------------------------------------------------------------------
 
 HF_HOME = os.getenv(
     "HF_HOME",
-    "/tmp/huggingface",
+    "/app/.huggingface",
 )
 
-PADDLE_HOME = os.getenv(
-    "PADDLE_HOME",
-    "/tmp/paddle",
+PADDLE_PDX_CACHE_HOME = os.getenv(
+    "PADDLE_PDX_CACHE_HOME",
+    "/app/.paddlex",
 )
+
+
+# ---------------------------------------------------------------------------
+# Input limits
+# ---------------------------------------------------------------------------
+
+MAX_DOWNLOAD_SIZE_MB = get_int(
+    "MAX_DOWNLOAD_SIZE_MB",
+    500,
+)
+
+if MAX_DOWNLOAD_SIZE_MB <= 0:
+    raise ValueError(
+        "MAX_DOWNLOAD_SIZE_MB must be greater than 0."
+    )
+```
