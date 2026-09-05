@@ -90,7 +90,11 @@ Target utama project ini adalah OCR dan document parsing untuk dokumen hasil sca
                   │                     │
                   │ Markdown + JSON     │
                   └─────────────────────┘
+```
+
 Project structure
+
+```
 paddleocr-vl-runpod/
 │
 ├── Dockerfile
@@ -105,6 +109,8 @@ paddleocr-vl-runpod/
 └── .github/
     └── workflows/
         └── docker.yml
+```
+
 File responsibilities
 Dockerfile
 
@@ -118,7 +124,7 @@ PaddleOCR
 RunPod
 Python dependencies
 
-The PaddleOCR-VL model itself is downloaded during worker initialization rather than being baked into the Docker image.
+The PaddleOCR-VL model weights are baked into the Docker image during the build. Workers load the weights from local disk at startup instead of downloading them from the internet.
 
 requirements.txt
 
@@ -580,16 +586,15 @@ The worker should still be deployed behind RunPod authentication and should not 
 
 Model cache
 
-The first worker startup may take longer because PaddleOCR/PaddleX may need to download model files.
+Model files are baked into the Docker image at build time. At startup, workers only load the weights into GPU memory; no model downloads happen over the network.
 
-Subsequent startup behavior depends on the persistence of the container/cache storage provided by the deployment environment.
+If PADDLE_PDX_CACHE_HOME or HF_HOME are overridden at runtime, point them to the baked cache locations (/app/.paddlex and /app/.huggingface); otherwise PaddleOCR/PaddleX will download the model files again.
 
 Future improvements
 
 Planned improvements:
 
 Large-PDF batching
-Persistent model cache
 Object storage output
 Result files instead of returning huge JSON responses
 Webhook/callback support
