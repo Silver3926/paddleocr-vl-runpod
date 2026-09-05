@@ -34,13 +34,21 @@ RUN python3 -m pip install \
     paddlepaddle-gpu==3.2.1 \
     -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
 
-RUN python3 -m pip install \
-    https://paddle-whl.bj.bcebos.com/nightly/cu126/safetensors/safetensors-0.6.2.dev0-cp38-abi3-linux_x86_64.whl
-
 COPY requirements.txt /app/requirements.txt
 
 RUN python3 -m pip install \
     -r /app/requirements.txt
+
+# Bake the PaddleOCR-VL model weights into the image so that workers do not
+# download them (multi-GB) on every cold start.
+#
+# This layer is intentionally placed BEFORE "COPY . /app/" so that code
+# changes do not invalidate the large model layer on registry pulls.
+#
+# The build runner has no GPU, so the download runs on CPU; the weights
+# are device-agnostic and are loaded onto the GPU at runtime.
+RUN python3 -c "from paddleocr import PaddleOCRVL; PaddleOCRVL(pipeline_version='v1.6', device='cpu')" \
+    && du -sh /app/.paddlex /app/.huggingface
 
 COPY . /app/
 
@@ -53,4 +61,3 @@ RUN mkdir -p \
 RUN chmod +x /app/start.sh
 
 CMD ["/app/start.sh"]
-
