@@ -1,4 +1,3 @@
-````markdown
 # PaddleOCR-VL 1.6 — RunPod Serverless
 
 RunPod Serverless worker untuk menjalankan **PaddleOCR-VL 1.6** dari Hugging Face.
@@ -19,7 +18,7 @@ Hasil Markdown dapat digunakan sebagai input untuk sistem RAG seperti Open Noteb
 
 ## Architecture
 
-```text
+```
                     ┌─────────────────────┐
                     │      RunPod         │
                     │     Serverless      │
