@@ -1,7 +1,3 @@
-Siap. Ini **File #9 — `README.md`**. Saya buat README yang sekaligus menjadi dokumentasi cara menjalankan worker, format input RunPod, konfigurasi environment, dan deployment GHCR.
-
-Letakkan di **root repository**, sejajar dengan `Dockerfile`.
-
 ````markdown
 # PaddleOCR-VL 1.6 — RunPod Serverless
 
