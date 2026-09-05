@@ -1,4 +1,3 @@
-```dockerfile
 FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -54,4 +53,4 @@ RUN mkdir -p \
 RUN chmod +x /app/start.sh
 
 CMD ["/app/start.sh"]
-```
+
