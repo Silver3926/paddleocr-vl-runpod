@@ -1,4 +1,3 @@
-```python
 import logging
 import uuid
 from pathlib import Path
@@ -869,4 +868,3 @@ if __name__ == "__main__":
             "handler": handler,
         }
     )
-```
