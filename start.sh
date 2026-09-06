@@ -1,4 +1,3 @@
-```bash
 #!/usr/bin/env bash
 
 set -euo pipefail
@@ -102,4 +101,3 @@ echo "Starting RunPod Serverless worker..."
 echo ""
 
 exec python3 -u /app/handler.py
-```
