@@ -1,4 +1,3 @@
-```python
 import os
 
 
@@ -45,7 +44,6 @@ def get_int(
         return int(value)
 
     except ValueError as exc:
-
         raise ValueError(
             f"Environment variable {name} "
             f"must be an integer."
@@ -160,4 +158,3 @@ if MAX_DOWNLOAD_SIZE_MB <= 0:
     raise ValueError(
         "MAX_DOWNLOAD_SIZE_MB must be greater than 0."
     )
-```

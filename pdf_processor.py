@@ -1,4 +1,3 @@
-```python
 import logging
 import shutil
 from pathlib import Path
@@ -452,4 +451,3 @@ def validate_input_file(
         f"Unsupported file type: "
         f"{file_type}"
     )
-```
