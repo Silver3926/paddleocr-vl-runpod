@@ -1,13 +1,11 @@
-name: CI/CD
+# CI/CD workflows
 
-This workflow is defined in `.github/workflows/docker.yml` and runs:
+The repository uses two separate workflows:
 
-1. Ruff linting
-2. Pytest unit tests
-3. Bandit security checks
-4. pip-audit dependency checks
-5. Docker image build and Trivy scanning
+- `ci.yml`: runs Ruff, Pytest, Bandit, and pip-audit on pull requests, pushes to
+  `main`, and manual runs. It never publishes a container image.
+- `release.yml`: builds, scans, and publishes the container only for relevant
+  changes pushed to `main`, or for a manual run.
 
-The Docker build only runs after the `quality` job succeeds. Pull requests run
-quality checks but do not push an image. Pushes to `main` and manual runs build
-and publish the image to GHCR.
+The release image is tagged with the full commit SHA and `latest`. Production
+RunPod deployments should use the full commit-SHA tag rather than `latest`.
