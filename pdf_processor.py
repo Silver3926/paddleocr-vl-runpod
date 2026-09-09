@@ -1,453 +1,174 @@
+import hashlib
 import logging
 import shutil
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin
 
-import fitz  # PyMuPDF
+import fitz
 import requests
 from PIL import Image
 
 from config import (
+    DOWNLOAD_CONNECT_TIMEOUT_SECONDS,
+    DOWNLOAD_READ_TIMEOUT_SECONDS,
     MAX_DOWNLOAD_SIZE_MB,
     MAX_PDF_PAGES,
     TEMP_DIR,
 )
-
+from url_security import validate_remote_url
 
 logger = logging.getLogger(__name__)
+MAX_REDIRECTS = 5
+ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "TIFF", "BMP"}
 
 
-# ---------------------------------------------------------------------------
-# Temporary directory
-# ---------------------------------------------------------------------------
+def _safe_job_directory_name(job_id: str) -> str:
+    return hashlib.sha256(str(job_id).encode("utf-8")).hexdigest()[:32]
 
-def create_job_directory(
-    job_id: str,
-) -> Path:
-    """
-    Create an isolated temporary directory for one RunPod job.
-    """
 
-    job_dir = (
-        Path(TEMP_DIR) /
-        job_id
-    )
-
-    job_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
+def create_job_directory(job_id: str) -> Path:
+    root = Path(TEMP_DIR).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    job_dir = root / _safe_job_directory_name(job_id)
+    job_dir.mkdir(parents=False, exist_ok=False)
+    if job_dir.parent != root:
+        raise RuntimeError("Invalid job directory path.")
     return job_dir
 
 
-def cleanup_job_directory(
-    job_dir: Path,
-) -> None:
-    """
-    Remove all temporary files created for a job.
-    """
-
+def cleanup_job_directory(job_dir: Path) -> None:
     if job_dir.exists():
-
-        shutil.rmtree(
-            job_dir,
-            ignore_errors=True,
-        )
+        shutil.rmtree(job_dir, ignore_errors=True)
 
 
-# ---------------------------------------------------------------------------
-# URL validation
-# ---------------------------------------------------------------------------
+def validate_url(url: str) -> str:
+    return validate_remote_url(url)
 
-def validate_url(
-    url: str,
-) -> str:
-    """
-    Validate and normalize an HTTP/HTTPS URL.
-    """
 
-    if not isinstance(
-        url,
-        str,
-    ):
-
-        raise ValueError(
-            "Input URL must be a string."
-        )
-
-    url = url.strip()
-
-    if not url:
-
-        raise ValueError(
-            "Input URL must be a non-empty string."
-        )
-
+def _check_content_length(response: requests.Response, limit: int) -> None:
+    header = response.headers.get("Content-Length")
+    if not header:
+        return
     try:
-
-        parsed = urlparse(
-            url
+        size = int(header)
+    except ValueError:
+        return
+    if size > limit:
+        raise ValueError(
+            f"Downloaded file exceeds MAX_DOWNLOAD_SIZE_MB={MAX_DOWNLOAD_SIZE_MB} MB."
         )
 
-    except Exception as exc:
-
-        raise ValueError(
-            f"Invalid input URL: {exc}"
-        ) from exc
-
-    if parsed.scheme not in {
-        "http",
-        "https",
-    }:
-
-        raise ValueError(
-            "Input URL must use HTTP or HTTPS."
-        )
-
-    if not parsed.netloc:
-
-        raise ValueError(
-            "Input URL must contain a valid host."
-        )
-
-    return url
-
-
-# ---------------------------------------------------------------------------
-# Download
-# ---------------------------------------------------------------------------
 
 def download_file(
     url: str,
     destination: Path,
-    timeout: int = 120,
+    timeout: tuple[int, int] | None = None,
 ) -> Path:
-    """
-    Download a remote file to local temporary storage.
-
-    The download is streamed and limited by MAX_DOWNLOAD_SIZE_MB.
-    """
-
-    url = validate_url(
-        url
+    current_url = validate_remote_url(url)
+    max_size = MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
+    request_timeout = timeout or (
+        DOWNLOAD_CONNECT_TIMEOUT_SECONDS,
+        DOWNLOAD_READ_TIMEOUT_SECONDS,
     )
-
-    # ---------------------------------------------------------------
-    # Maximum download size
-    # ---------------------------------------------------------------
-
-    max_size_bytes = (
-        MAX_DOWNLOAD_SIZE_MB
-        * 1024
-        * 1024
-    )
-
-    logger.info(
-        "Downloading file: %s",
-        url,
-    )
-
-    # ---------------------------------------------------------------
-    # HTTP request
-    # ---------------------------------------------------------------
 
     try:
-
         with requests.Session() as session:
+            for redirect_count in range(MAX_REDIRECTS + 1):
+                response = session.get(
+                    current_url,
+                    stream=True,
+                    timeout=request_timeout,
+                    allow_redirects=False,
+                )
 
-            response = session.get(
-                url,
-                stream=True,
-                timeout=timeout,
-                allow_redirects=True,
-            )
+                if response.is_redirect or response.is_permanent_redirect:
+                    location = response.headers.get("Location")
+                    response.close()
+                    if not location:
+                        raise ValueError("Remote server returned an invalid redirect.")
+                    if redirect_count >= MAX_REDIRECTS:
+                        raise ValueError("Too many redirects while downloading file.")
+                    current_url = validate_remote_url(
+                        urljoin(current_url, location)
+                    )
+                    continue
 
-            response.raise_for_status()
-
-            # -------------------------------------------------------
-            # Content-Length check
-            # -------------------------------------------------------
-
-            content_length = response.headers.get(
-                "Content-Length"
-            )
-
-            if content_length:
-
+                response.raise_for_status()
+                _check_content_length(response, max_size)
                 try:
-
-                    content_length = int(
-                        content_length
-                    )
-
-                except ValueError:
-
-                    content_length = None
-
-                if (
-                    content_length is not None
-                    and content_length > max_size_bytes
-                ):
-
-                    raise ValueError(
-                        "Downloaded file exceeds "
-                        f"MAX_DOWNLOAD_SIZE_MB="
-                        f"{MAX_DOWNLOAD_SIZE_MB} MB."
-                    )
-
-            # -------------------------------------------------------
-            # Stream response to disk
-            # -------------------------------------------------------
-
-            downloaded_bytes = 0
-
-            try:
-
-                with destination.open(
-                    "wb"
-                ) as file:
-
-                    for chunk in response.iter_content(
-                        chunk_size=1024 * 1024,
-                    ):
-
-                        if not chunk:
-                            continue
-
-                        downloaded_bytes += len(
-                            chunk
-                        )
-
-                        if (
-                            downloaded_bytes
-                            > max_size_bytes
-                        ):
-
-                            raise ValueError(
-                                "Downloaded file exceeds "
-                                f"MAX_DOWNLOAD_SIZE_MB="
-                                f"{MAX_DOWNLOAD_SIZE_MB} MB."
-                            )
-
-                        file.write(
-                            chunk
-                        )
-
-            except Exception:
-
-                # Remove incomplete download.
-                if destination.exists():
-
-                    destination.unlink(
-                        missing_ok=True
-                    )
-
-                raise
-
+                    with response, destination.open("wb") as output:
+                        downloaded = 0
+                        for chunk in response.iter_content(1024 * 1024):
+                            if not chunk:
+                                continue
+                            downloaded += len(chunk)
+                            if downloaded > max_size:
+                                raise ValueError(
+                                    "Downloaded file exceeds "
+                                    f"MAX_DOWNLOAD_SIZE_MB={MAX_DOWNLOAD_SIZE_MB} MB."
+                                )
+                            output.write(chunk)
+                except Exception:
+                    destination.unlink(missing_ok=True)
+                    raise
+                break
+            else:
+                raise ValueError("Unable to download file after redirects.")
     except requests.RequestException as exc:
+        raise RuntimeError("Unable to download remote file.") from exc
 
-        raise RuntimeError(
-            f"Unable to download file: {exc}"
-        ) from exc
-
-    # ---------------------------------------------------------------
-    # Final file check
-    # ---------------------------------------------------------------
-
-    if not destination.exists():
-
-        raise RuntimeError(
-            "Downloaded file was not created."
-        )
-
-    if destination.stat().st_size == 0:
-
-        destination.unlink(
-            missing_ok=True
-        )
-
-        raise ValueError(
-            "Downloaded file is empty."
-        )
-
-    logger.info(
-        "Downloaded file: %s (%.2f MB)",
-        destination,
-        downloaded_bytes
-        / (1024 * 1024),
-    )
-
+    if not destination.exists() or destination.stat().st_size == 0:
+        destination.unlink(missing_ok=True)
+        raise ValueError("Downloaded file is empty.")
     return destination
 
 
-# ---------------------------------------------------------------------------
-# PDF validation
-# ---------------------------------------------------------------------------
+def validate_pdf_signature(pdf_path: Path) -> None:
+    with pdf_path.open("rb") as file:
+        if file.read(5) != b"%PDF-":
+            raise ValueError("File does not have a valid PDF signature.")
 
-def validate_pdf(
-    pdf_path: Path,
-) -> int:
-    """
-    Validate a PDF and return its page count.
 
-    The PDF is rejected when it exceeds MAX_PDF_PAGES.
-    """
-
-    logger.info(
-        "Validating PDF: %s",
-        pdf_path,
-    )
-
+def validate_pdf(pdf_path: Path) -> int:
+    validate_pdf_signature(pdf_path)
     try:
-
-        document = fitz.open(
-            str(pdf_path)
-        )
-
+        document = fitz.open(str(pdf_path))
     except Exception as exc:
-
-        raise ValueError(
-            f"Unable to open PDF: {exc}"
-        ) from exc
-
+        raise ValueError("Unable to open PDF.") from exc
     try:
-
         page_count = document.page_count
-
     finally:
-
         document.close()
-
     if page_count <= 0:
-
-        raise ValueError(
-            "PDF contains no pages."
-        )
-
-    logger.info(
-        "PDF contains %d page(s).",
-        page_count,
-    )
-
-    # ---------------------------------------------------------------
-    # Maximum page limit
-    # ---------------------------------------------------------------
-
+        raise ValueError("PDF contains no pages.")
     if page_count > MAX_PDF_PAGES:
-
         raise ValueError(
-            f"PDF contains {page_count} pages, "
-            f"but MAX_PDF_PAGES is "
-            f"{MAX_PDF_PAGES}."
+            f"PDF contains too many pages (maximum: {MAX_PDF_PAGES})."
         )
-
     return page_count
 
 
-# ---------------------------------------------------------------------------
-# Image validation
-# ---------------------------------------------------------------------------
-
-def validate_image(
-    image_path: Path,
-) -> None:
-    """
-    Validate that an image can be opened.
-    """
-
-    logger.info(
-        "Validating image: %s",
-        image_path,
-    )
-
+def validate_image(image_path: Path) -> None:
+    Image.MAX_IMAGE_PIXELS = 50_000_000
     try:
-
-        with Image.open(
-            image_path
-        ) as image:
-
+        with Image.open(image_path) as image:
+            if image.format not in ALLOWED_IMAGE_FORMATS:
+                raise ValueError(f"Unsupported image format: {image.format}.")
             image.verify()
-
+    except ValueError:
+        raise
     except Exception as exc:
-
-        raise ValueError(
-            f"Invalid image file: "
-            f"{image_path}"
-        ) from exc
-
-    logger.info(
-        "Image validation successful."
-    )
+        raise ValueError("Invalid image file.") from exc
 
 
-# ---------------------------------------------------------------------------
-# Input validation
-# ---------------------------------------------------------------------------
-
-def validate_input_file(
-    file_path: Path,
-    file_type: str,
-) -> int | None:
-    """
-    Validate a downloaded input file.
-
-    Returns:
-
-        PDF:
-            Number of pages.
-
-        Image:
-            None.
-    """
-
-    # ---------------------------------------------------------------
-    # Existence
-    # ---------------------------------------------------------------
-
+def validate_input_file(file_path: Path, file_type: str) -> int | None:
     if not file_path.exists():
-
-        raise FileNotFoundError(
-            f"Input file does not exist: "
-            f"{file_path}"
-        )
-
-    # ---------------------------------------------------------------
-    # File size
-    # ---------------------------------------------------------------
-
-    file_size = file_path.stat().st_size
-
-    if file_size == 0:
-
-        raise ValueError(
-            "Input file is empty."
-        )
-
-    logger.info(
-        "Input file size: %.2f MB",
-        file_size / (1024 * 1024),
-    )
-
-    # ---------------------------------------------------------------
-    # File type
-    # ---------------------------------------------------------------
-
+        raise FileNotFoundError("Input file does not exist.")
+    if file_path.stat().st_size == 0:
+        raise ValueError("Input file is empty.")
     if file_type == "pdf":
-
-        return validate_pdf(
-            file_path
-        )
-
+        return validate_pdf(file_path)
     if file_type == "image":
-
-        validate_image(
-            file_path
-        )
-
+        validate_image(file_path)
         return None
-
-    raise ValueError(
-        f"Unsupported file type: "
-        f"{file_type}"
-    )
+    raise ValueError("Unsupported input file type.")

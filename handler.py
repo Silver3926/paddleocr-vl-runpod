@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -10,6 +11,7 @@ from config import (
     CONCATENATE_PAGES,
     DEVICE,
     LOG_LEVEL,
+    MAX_OUTPUT_SIZE_MB,
     MERGE_TABLES,
     PIPELINE_VERSION,
     RELEVEL_TITLES,
@@ -23,789 +25,185 @@ from pdf_processor import (
     validate_input_file,
 )
 
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-
 logging.basicConfig(
-    level=getattr(
-        logging,
-        LOG_LEVEL.upper(),
-        logging.INFO,
-    ),
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
-
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# PaddleOCR-VL initialization
-# ---------------------------------------------------------------------------
-
-logger.info(
-    "=========================================="
-)
-
-logger.info(
-    "Initializing PaddleOCR-VL..."
-)
-
-logger.info(
-    "Pipeline version: %s",
-    PIPELINE_VERSION,
-)
-
-logger.info(
-    "Device: %s",
-    DEVICE,
-)
-
-pipeline_kwargs = {
-    "pipeline_version": PIPELINE_VERSION,
-    "device": DEVICE,
-}
-
-logger.info(
-    "PaddleOCR-VL configuration: %s",
-    pipeline_kwargs,
-)
-
+logger.info("Initializing PaddleOCR-VL version %s on %s", PIPELINE_VERSION, DEVICE)
 try:
     pipeline = PaddleOCRVL(
-        **pipeline_kwargs,
+        pipeline_version=PIPELINE_VERSION,
+        device=DEVICE,
     )
-
 except Exception as exc:
-    logger.exception(
-        "Failed to initialize PaddleOCR-VL."
-    )
-
-    raise RuntimeError(
-        "PaddleOCR-VL initialization failed. "
-        "Check PaddlePaddle, CUDA/GPU, model downloads, "
-        "and PaddleOCR dependencies."
-    ) from exc
-
-logger.info(
-    "PaddleOCR-VL pipeline initialized successfully."
-)
-
-logger.info(
-    "=========================================="
-)
+    logger.exception("Failed to initialize PaddleOCR-VL.")
+    raise RuntimeError("PaddleOCR-VL initialization failed.") from exc
 
 
-# ---------------------------------------------------------------------------
-# Result helpers
-# ---------------------------------------------------------------------------
-
-def get_result_markdown(
-    result: Any,
-) -> str:
-    """
-    Extract Markdown text from a PaddleOCR-VL result.
-
-    PaddleOCR-VL normally exposes result.markdown as a dictionary
-    containing markdown_texts and related metadata.
-
-    This function also supports simpler/string-based result formats
-    for compatibility.
-    """
-
-    markdown = getattr(
-        result,
-        "markdown",
-        None,
-    )
-
-    # ---------------------------------------------------------------
-    # Markdown dictionary
-    # ---------------------------------------------------------------
-
-    if isinstance(
-        markdown,
-        dict,
-    ):
-
-        text = markdown.get(
-            "markdown_texts"
-        )
-
-        if isinstance(
-            text,
-            str,
-        ):
-            return text
-
-        if isinstance(
-            text,
-            list,
-        ):
-            return "\n\n".join(
-                str(item)
-                for item in text
-                if item
-            )
-
-        text = markdown.get(
-            "text"
-        )
-
-        if isinstance(
-            text,
-            str,
-        ):
-            return text
-
-    # ---------------------------------------------------------------
-    # Markdown string
-    # ---------------------------------------------------------------
-
-    if isinstance(
-        markdown,
-        str,
-    ):
-        return markdown
-
-    # ---------------------------------------------------------------
-    # Dictionary-like result fallback
-    # ---------------------------------------------------------------
-
-    if isinstance(
-        result,
-        dict,
-    ):
-
-        markdown = result.get(
-            "markdown"
-        )
-
-        if isinstance(
-            markdown,
-            dict,
-        ):
-
-            text = markdown.get(
-                "markdown_texts"
-            )
-
-            if isinstance(
-                text,
-                str,
-            ):
-                return text
-
-            if isinstance(
-                text,
-                list,
-            ):
-                return "\n\n".join(
-                    str(item)
-                    for item in text
-                    if item
-                )
-
-            text = markdown.get(
-                "text"
-            )
-
-            if isinstance(
-                text,
-                str,
-            ):
-                return text
-
-        if isinstance(
-            markdown,
-            str,
-        ):
-            return markdown
-
-    return ""
+class OutputTooLargeError(ValueError):
+    """Raised when the inline RunPod response exceeds the configured limit."""
 
 
-def get_result_json(
-    result: Any,
-) -> Any:
-    """
-    Extract the structured JSON-compatible result.
+def make_json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key): make_json_safe(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [make_json_safe(item) for item in value]
+    if hasattr(value, "tolist"):
+        return make_json_safe(value.tolist())
+    return str(value)
 
-    PaddleOCR/PaddleX result objects normally expose a `json`
-    attribute containing structured result data.
-    """
 
-    value = getattr(
-        result,
-        "json",
-        None,
-    )
+def get_result_markdown(result: Any) -> str:
+    markdown = getattr(result, "markdown", None)
+    if markdown is None and isinstance(result, dict):
+        markdown = result.get("markdown")
+    if isinstance(markdown, dict):
+        markdown = markdown.get("markdown_texts", markdown.get("text", ""))
+    if isinstance(markdown, list):
+        return "\n\n".join(str(item) for item in markdown if item)
+    return markdown if isinstance(markdown, str) else ""
 
-    # ---------------------------------------------------------------
-    # Some implementations expose json as a callable.
-    # ---------------------------------------------------------------
 
+def get_result_json(result: Any) -> Any:
+    value = getattr(result, "json", None)
     if callable(value):
-
         try:
             value = value()
-
-        except Exception as exc:
-
-            logger.warning(
-                "Unable to call result.json(): %s",
-                exc,
-            )
-
+        except Exception:
+            logger.warning("Unable to extract structured OCR result.")
             value = None
-
-    if value is not None:
-        return value
-
-    # ---------------------------------------------------------------
-    # Dictionary fallback.
-    # ---------------------------------------------------------------
-
-    if isinstance(
-        result,
-        dict,
-    ):
-        return result
-
-    # ---------------------------------------------------------------
-    # Last-resort string representation.
-    # ---------------------------------------------------------------
-
-    try:
-        return str(result)
-
-    except Exception:
-        return None
+    if value is None and isinstance(result, dict):
+        value = result
+    if value is None:
+        value = str(result)
+    return make_json_safe(value)
 
 
-# ---------------------------------------------------------------------------
-# Result processing
-# ---------------------------------------------------------------------------
-
-def process_results(
-    results: list[Any],
-) -> tuple[str, list[Any]]:
-    """
-    Convert PaddleOCR-VL results into combined Markdown and JSON.
-
-    Markdown from multiple result objects is combined into one document.
-
-    JSON output contains one structured result per PaddleOCR-VL result.
-    """
-
-    markdown_parts: list[str] = []
-    json_results: list[Any] = []
-
-    for index, result in enumerate(
-        results,
-        start=1,
-    ):
-
-        markdown = get_result_markdown(
-            result
-        )
-
+def process_results(results: list[Any]) -> tuple[str, list[Any]]:
+    markdown_parts = []
+    json_results = []
+    for index, result in enumerate(results, start=1):
+        markdown = get_result_markdown(result)
         if markdown:
-
-            markdown_parts.append(
-                f"<!-- Result {index} -->\n\n"
-                f"{markdown}"
-            )
-
+            markdown_parts.append(f"<!-- Result {index} -->\n\n{markdown}")
         if RETURN_JSON:
-
-            json_results.append(
-                {
-                    "result": get_result_json(
-                        result
-                    ),
-                }
-            )
-
-    combined_markdown = "\n\n".join(
-        markdown_parts
-    )
-
-    return (
-        combined_markdown,
-        json_results,
-    )
+            json_results.append({"result": get_result_json(result)})
+    return "\n\n".join(markdown_parts), json_results
 
 
-# ---------------------------------------------------------------------------
-# PDF processing
-# ---------------------------------------------------------------------------
-
-def process_pdf(
-    pdf_path: Path,
-) -> tuple[str, list[Any], int]:
-    """
-    Process a PDF directly through PaddleOCR-VL.
-
-    Returns:
-
-        markdown
-        structured results
-        original PDF page count
-    """
-
-    logger.info(
-        "Validating PDF..."
-    )
-
-    page_count = validate_input_file(
-        file_path=pdf_path,
-        file_type="pdf",
-    )
-
-    if page_count is None:
-        raise ValueError(
-            "Unable to determine PDF page count."
-        )
-
-    logger.info(
-        "Original PDF page count: %d",
-        page_count,
-    )
-
-    logger.info(
-        "Processing PDF with PaddleOCR-VL: %s",
-        pdf_path,
-    )
-
-    output = pipeline.predict(
-        input=str(pdf_path),
-    )
-
-    # PaddleOCR returns a lazy iterator.
-    pages = list(
-        output
-    )
-
+def process_pdf(pdf_path: Path) -> tuple[str, list[Any], int]:
+    page_count = validate_input_file(pdf_path, "pdf")
+    pages = list(pipeline.predict(input=str(pdf_path)))
     if not pages:
-
-        raise ValueError(
-            "PaddleOCR-VL returned no results."
-        )
-
-    logger.info(
-        "PaddleOCR-VL returned %d page result(s).",
-        len(pages),
-    )
-
-    # ---------------------------------------------------------------
-    # Multi-page restructuring
-    # ---------------------------------------------------------------
+        raise ValueError("PaddleOCR-VL returned no results.")
 
     processed_results = pages
-    restructured = False
-
     if len(pages) > 1:
-
         try:
-
-            logger.info(
-                "Restructuring multi-page results..."
+            restructured = pipeline.restructure_pages(
+                pages,
+                merge_tables=MERGE_TABLES,
+                relevel_titles=RELEVEL_TITLES,
+                concatenate_pages=CONCATENATE_PAGES,
             )
+            restructured_results = list(restructured)
+            if restructured_results:
+                processed_results = restructured_results
+        except Exception:
+            logger.warning("Multi-page restructuring failed; using page results.")
 
-            logger.info(
-                "merge_tables=%s",
-                MERGE_TABLES,
-            )
-
-            logger.info(
-                "relevel_titles=%s",
-                RELEVEL_TITLES,
-            )
-
-            logger.info(
-                "concatenate_pages=%s",
-                CONCATENATE_PAGES,
-            )
-
-            restructured_output = (
-                pipeline.restructure_pages(
-                    pages,
-                    merge_tables=MERGE_TABLES,
-                    relevel_titles=RELEVEL_TITLES,
-                    concatenate_pages=CONCATENATE_PAGES,
-                )
-            )
-
-            processed_results = list(
-                restructured_output
-            )
-
-            if processed_results:
-
-                restructured = True
-
-                logger.info(
-                    "Multi-page restructuring completed."
-                )
-
-                logger.info(
-                    "Restructured result count: %d",
-                    len(processed_results),
-                )
-
-            else:
-
-                logger.warning(
-                    "Restructuring returned no results. "
-                    "Using original page results."
-                )
-
-                processed_results = pages
-
-        except Exception as exc:
-
-            logger.warning(
-                "Multi-page restructuring failed: %s",
-                exc,
-            )
-
-            logger.warning(
-                "Falling back to original page results."
-            )
-
-            processed_results = pages
-
-    # ---------------------------------------------------------------
-    # Build output
-    # ---------------------------------------------------------------
-
-    markdown, results = process_results(
-        processed_results
-    )
-
-    if not markdown:
-
-        logger.warning(
-            "PaddleOCR-VL produced no Markdown text."
-        )
-
-    if restructured:
-
-        logger.info(
-            "Output generated from restructured results."
-        )
-
-    else:
-
-        logger.info(
-            "Output generated from individual page results."
-        )
-
-    return (
-        markdown,
-        results,
-        page_count,
-    )
+    markdown, results = process_results(processed_results)
+    return markdown, results, page_count
 
 
-# ---------------------------------------------------------------------------
-# Image processing
-# ---------------------------------------------------------------------------
-
-def process_image(
-    image_path: Path,
-) -> tuple[str, list[Any]]:
-    """
-    Process a single image through PaddleOCR-VL.
-    """
-
-    logger.info(
-        "Validating image..."
-    )
-
-    validate_input_file(
-        file_path=image_path,
-        file_type="image",
-    )
-
-    logger.info(
-        "Processing image: %s",
-        image_path,
-    )
-
-    output = pipeline.predict(
-        input=str(image_path),
-    )
-
-    results = list(
-        output
-    )
-
+def process_image(image_path: Path) -> tuple[str, list[Any]]:
+    validate_input_file(image_path, "image")
+    results = list(pipeline.predict(input=str(image_path)))
     if not results:
+        raise ValueError("PaddleOCR-VL returned no results.")
+    return process_results(results)
 
-        raise ValueError(
-            "PaddleOCR-VL returned no results."
+
+def validate_url_input(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"'{field_name}' must be a non-empty string.")
+    if not value.strip().lower().startswith("https://"):
+        raise ValueError(f"'{field_name}' must use HTTPS.")
+    return value.strip()
+
+
+def response_with_size_limit(response: dict[str, Any]) -> dict[str, Any]:
+    try:
+        payload = json.dumps(
+            response,
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("OCR response could not be serialized as JSON.") from exc
+
+    limit = MAX_OUTPUT_SIZE_MB * 1024 * 1024
+    if len(payload) > limit:
+        raise OutputTooLargeError("OCR response exceeds the configured size limit.")
+    return response
+
+
+def public_error(message: str, code: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error": message,
+        "error_code": code,
+    }
+
+
+def handler(job: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(job, dict):
+        return public_error("RunPod job must be an object.", "INVALID_JOB")
+
+    job_id = job.get("id", str(uuid.uuid4()))
+    job_input = job.get("input", {})
+    if not isinstance(job_input, dict):
+        return public_error("input must be an object.", "INVALID_INPUT")
+
+    image_url = job_input.get("image_url")
+    pdf_url = job_input.get("pdf_url")
+    if bool(image_url) == bool(pdf_url):
+        return public_error(
+            "Provide exactly one of 'image_url' or 'pdf_url'.",
+            "INVALID_INPUT",
         )
-
-    markdown, json_results = process_results(
-        results
-    )
-
-    if not markdown:
-
-        logger.warning(
-            "PaddleOCR-VL produced no Markdown text."
-        )
-
-    return (
-        markdown,
-        json_results,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Input validation
-# ---------------------------------------------------------------------------
-
-def validate_url_input(
-    value: Any,
-    field_name: str,
-) -> str:
-    """
-    Validate a URL input received from RunPod.
-    """
-
-    if not isinstance(
-        value,
-        str,
-    ):
-        raise ValueError(
-            f"'{field_name}' must be a string."
-        )
-
-    value = value.strip()
-
-    if not value:
-        raise ValueError(
-            f"'{field_name}' must not be empty."
-        )
-
-    if not (
-        value.startswith("https://")
-        or value.startswith("http://")
-    ):
-        raise ValueError(
-            f"'{field_name}' must use HTTP or HTTPS."
-        )
-
-    return value
-
-
-# ---------------------------------------------------------------------------
-# RunPod handler
-# ---------------------------------------------------------------------------
-
-def handler(
-    job: dict[str, Any],
-) -> dict[str, Any]:
-    """
-    RunPod Serverless handler.
-
-    Supported inputs:
-
-        {
-            "input": {
-                "image_url": "https://..."
-            }
-        }
-
-    or:
-
-        {
-            "input": {
-                "pdf_url": "https://..."
-            }
-        }
-    """
-
-    # ---------------------------------------------------------------
-    # Validate job object
-    # ---------------------------------------------------------------
-
-    if not isinstance(
-        job,
-        dict,
-    ):
-
-        return {
-            "success": False,
-            "error": "RunPod job must be an object.",
-        }
-
-    job_id = job.get(
-        "id",
-        str(uuid.uuid4()),
-    )
-
-    job_input = job.get(
-        "input",
-        {},
-    )
-
-    logger.info(
-        "Received RunPod job: %s",
-        job_id,
-    )
-
-    # ---------------------------------------------------------------
-    # Validate input object
-    # ---------------------------------------------------------------
-
-    if not isinstance(
-        job_input,
-        dict,
-    ):
-
-        return {
-            "success": False,
-            "error": "input must be an object.",
-        }
-
-    image_url = job_input.get(
-        "image_url"
-    )
-
-    pdf_url = job_input.get(
-        "pdf_url"
-    )
-
-    # ---------------------------------------------------------------
-    # Require exactly one input
-    # ---------------------------------------------------------------
-
-    if not image_url and not pdf_url:
-
-        return {
-            "success": False,
-            "error": (
-                "Provide either 'image_url' "
-                "or 'pdf_url'."
-            ),
-        }
-
-    if image_url and pdf_url:
-
-        return {
-            "success": False,
-            "error": (
-                "Provide only one of "
-                "'image_url' or 'pdf_url'."
-            ),
-        }
-
-    # ---------------------------------------------------------------
-    # Validate selected URL
-    # ---------------------------------------------------------------
-
-    if image_url:
-
-        try:
-            image_url = validate_url_input(
-                image_url,
-                "image_url",
-            )
-
-        except ValueError as exc:
-
-            return {
-                "success": False,
-                "error": str(exc),
-            }
-
-    if pdf_url:
-
-        try:
-            pdf_url = validate_url_input(
-                pdf_url,
-                "pdf_url",
-            )
-
-        except ValueError as exc:
-
-            return {
-                "success": False,
-                "error": str(exc),
-            }
-
-    # ---------------------------------------------------------------
-    # Create isolated job directory
-    # ---------------------------------------------------------------
-
-    job_dir = create_job_directory(
-        job_id
-    )
-
-    logger.info(
-        "Job directory: %s",
-        job_dir,
-    )
 
     try:
-
-        # ===========================================================
-        # IMAGE
-        # ===========================================================
-
         if image_url:
+            image_url = validate_url_input(image_url, "image_url")
+        else:
+            pdf_url = validate_url_input(pdf_url, "pdf_url")
+    except ValueError as exc:
+        return public_error(str(exc), "INVALID_INPUT")
 
-            image_path = (
-                job_dir /
-                "input_image"
-            )
-
-            download_file(
-                url=image_url,
-                destination=image_path,
-            )
-
-            markdown, results = process_image(
-                image_path
-            )
-
+    job_dir = create_job_directory(job_id)
+    try:
+        if image_url:
+            image_path = job_dir / "input_image"
+            download_file(image_url, image_path)
+            markdown, results = process_image(image_path)
             response = {
                 "success": True,
                 "type": "image",
                 "markdown": markdown,
             }
-
-            if RETURN_JSON:
-
-                response["results"] = results
-
-            return response
-
-        # ===========================================================
-        # PDF
-        # ===========================================================
-
-        if pdf_url:
-
-            pdf_path = (
-                job_dir /
-                "input.pdf"
-            )
-
-            download_file(
-                url=pdf_url,
-                destination=pdf_path,
-            )
-
-            markdown, results, page_count = process_pdf(
-                pdf_path
-            )
-
+        else:
+            pdf_path = job_dir / "input.pdf"
+            download_file(pdf_url, pdf_path)
+            markdown, results, page_count = process_pdf(pdf_path)
             response = {
                 "success": True,
                 "type": "pdf",
@@ -813,58 +211,26 @@ def handler(
                 "markdown": markdown,
             }
 
-            if RETURN_JSON:
+        if RETURN_JSON:
+            response["results"] = results
+        return response_with_size_limit(response)
 
-                response["results"] = results
-
-            return response
-
-        return {
-            "success": False,
-            "error": "Unsupported input.",
-        }
-
-    except Exception as exc:
-
-        logger.exception(
-            "RunPod job %s failed.",
-            job_id,
+    except OutputTooLargeError:
+        logger.exception("Job output exceeded MAX_OUTPUT_SIZE_MB.")
+        return public_error(
+            "OCR output is too large for an inline response.",
+            "OUTPUT_TOO_LARGE",
         )
-
-        return {
-            "success": False,
-            "error": str(exc),
-        }
-
+    except Exception:
+        logger.exception("RunPod job failed: %s", job_id)
+        return public_error(
+            "Document processing failed.",
+            "PROCESSING_ERROR",
+        )
     finally:
+        cleanup_job_directory(job_dir)
 
-        cleanup_job_directory(
-            job_dir
-        )
-
-
-# ---------------------------------------------------------------------------
-# Start RunPod worker
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-
-    logger.info(
-        "Starting RunPod Serverless worker..."
-    )
-
-    logger.info(
-        "TEMP_DIR=%s",
-        TEMP_DIR,
-    )
-
-    logger.info(
-        "PADDLEOCR_DEVICE=%s",
-        DEVICE,
-    )
-
-    runpod.serverless.start(
-        {
-            "handler": handler,
-        }
-    )
+    logger.info("Starting RunPod worker; TEMP_DIR=%s", TEMP_DIR)
+    runpod.serverless.start({"handler": handler})

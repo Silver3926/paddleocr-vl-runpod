@@ -1,0 +1,7 @@
+pytest==8.3.5
+requests==2.34.2
+Pillow==12.3.0
+PyMuPDF==1.24.0
+ruff==0.9.10
+bandit==1.8.3
+pip-audit==2.7.3
