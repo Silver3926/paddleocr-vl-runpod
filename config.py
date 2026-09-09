@@ -1,4 +1,5 @@
 import os
+import tempfile
 
 
 def get_bool(name: str, default: bool) -> bool:
@@ -58,6 +59,9 @@ for name, value in {
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 RETURN_JSON = get_bool("RETURN_JSON", True)
-TEMP_DIR = os.getenv("TEMP_DIR", "/tmp/paddleocr")
+TEMP_DIR = os.getenv(
+    "TEMP_DIR",
+    os.path.join(tempfile.gettempdir(), "paddleocr"),
+)
 HF_HOME = os.getenv("HF_HOME", "/app/.huggingface")
 PADDLE_PDX_CACHE_HOME = os.getenv("PADDLE_PDX_CACHE_HOME", "/app/.paddlex")

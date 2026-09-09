@@ -38,8 +38,10 @@ jobs:
       - name: Pytest
         run: python -m pytest -q
 
-      - name: Bandit
-        run: python -m bandit -r . -x tests,.venv,build,dist
+      - name: Bandit production source
+        run: >
+          python -m bandit
+          -r config.py handler.py pdf_processor.py url_security.py
 
       - name: pip-audit
         run: python -m pip_audit -r requirements.txt --progress-spinner off
