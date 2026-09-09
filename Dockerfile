@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -30,9 +30,13 @@ RUN python3 -m pip install \
     setuptools \
     wheel
 
+# CUDA 11.8 build of PaddlePaddle: runs on hosts with driver >= 450,
+# while the cu126 build required driver >= 560 (CUDA 12.6) and got
+# rejected by nvidia-container-cli on older hosts:
+#   "unsatisfied condition: cuda>=12.6"
 RUN python3 -m pip install \
-    paddlepaddle-gpu==3.2.1 \
-    -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+    "paddlepaddle-gpu>=3.2,<3.3" \
+    -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
 
 COPY requirements.txt /app/requirements.txt
 
@@ -45,17 +49,11 @@ RUN python3 -m pip install \
 # This layer is intentionally placed BEFORE "COPY . /app/" so that code
 # changes do not invalidate the large model layer on registry pulls.
 #
-# NOTE: the GitHub Actions runner has no NVIDIA driver, and paddlepaddle-gpu
-# cannot even be imported there: libpaddle is linked against libcuda.so.1,
-# which only exists on machines with the NVIDIA driver installed.
-# device="cpu" does not help because the import itself fails before any
-# device selection happens (see CI run #9).
-#
-# Fix: run the download with the CPU build of PaddlePaddle installed into a
-# throwaway directory that shadows the GPU build via PYTHONPATH. The model
-# files it downloads are identical, device-agnostic weights that the GPU
-# build loads at runtime. The directory is deleted afterwards so it does not
-# bloat the image.
+# NOTE: build runners have no NVIDIA driver, and paddlepaddle-gpu cannot
+# even be imported there (libpaddle links against libcuda.so.1). So the
+# download runs with the CPU build of PaddlePaddle in a throwaway
+# directory that shadows the GPU build via PYTHONPATH. The downloaded
+# weights are device-agnostic and are loaded onto the GPU at runtime.
 RUN pip install --no-cache-dir --target /opt/bake-deps \
         "paddlepaddle>=3.2,<3.3" \
         "paddleocr[doc-parser]==3.6.0" \
