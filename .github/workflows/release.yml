@@ -31,8 +31,15 @@ env:
   IMAGE_SHA_TAG: ${{ github.sha }}
 
 jobs:
+  quality:
+    name: Quality gate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
     name: Build, scan, and push image
+    needs: quality
     runs-on: ubuntu-latest
 
     steps:
