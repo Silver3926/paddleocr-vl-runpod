@@ -12,6 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 WORKDIR /app
 
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
@@ -27,7 +28,7 @@ RUN apt-get update \
 
 RUN python3 -m pip install --upgrade \
     pip \
-    setuptools \
+    setuptools==83.0.0 \
     wheel
 
 RUN python3 -m pip install \
