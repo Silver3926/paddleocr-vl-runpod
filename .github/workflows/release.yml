@@ -16,6 +16,12 @@ on:
       - url_security.py
       - .github/workflows/release.yml
   workflow_dispatch:
+    inputs:
+      no_cache:
+        description: Build from scratch without importing Docker cache (diagnostic)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -66,6 +72,7 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          no-cache: ${{ inputs.no_cache == true }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_SHA_TAG }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
@@ -79,7 +86,7 @@ jobs:
           sbom: true
 
       - name: Scan immutable image with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_SHA_TAG }}
           format: table
