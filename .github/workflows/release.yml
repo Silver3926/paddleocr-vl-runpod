@@ -89,6 +89,31 @@ jobs:
           scanners: vuln,misconfig,secret
           severity: CRITICAL,HIGH
 
+      # Keep this diagnostic scan independent from the release gate. It runs even
+      # when the table scan above fails and records full package paths/metadata.
+      - name: Generate Trivy JSON diagnostic report
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_CANDIDATE_TAG }}
+          format: json
+          output: trivy-report.json
+          list-all-pkgs: true
+          exit-code: "0"
+          ignore-unfixed: true
+          vuln-type: os,library
+          scanners: vuln
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+
+      - name: Upload Trivy JSON diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: trivy-report-${{ github.sha }}
+          path: trivy-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Promote scanned image to production tags
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
