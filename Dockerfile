@@ -60,8 +60,9 @@ RUN echo '=== DIAGNOSTIC: after requirements.txt installation ===' \
 # Download device-independent model weights with the CPU PaddlePaddle build.
 RUN python3 -m pip install --no-cache-dir --target /opt/bake-deps \
         paddlepaddle==3.2.1 \
-        paddleocr[doc-parser]==3.6.0 \
-    && echo '=== DIAGNOSTIC: packages in /opt/bake-deps ===' \
+        paddleocr[doc-parser]==3.6.0
+
+RUN echo '=== DIAGNOSTIC: packages in /opt/bake-deps ===' \
     && PYTHONPATH=/opt/bake-deps python3 - <<'PY'
 import importlib.metadata as metadata
 import sys
@@ -74,7 +75,8 @@ for name in ("paddlepaddle", "paddleocr", "paddlex", "msgpack", "protobuf", "set
     except metadata.PackageNotFoundError:
         print(f"{name}: NOT INSTALLED")
 PY
-    && PYTHONPATH=/opt/bake-deps \
+
+RUN PYTHONPATH=/opt/bake-deps \
        python3 -c "from paddleocr import PaddleOCRVL; PaddleOCRVL(pipeline_version='v1.6', device='cpu')" \
     && rm -rf /opt/bake-deps
 
