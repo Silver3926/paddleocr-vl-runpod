@@ -11,6 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /app
 
+# Apply the latest Ubuntu security updates before installing runtime packages.
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
@@ -36,7 +37,9 @@ RUN python3 -m pip install \
     -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
 
 COPY requirements.txt /app/requirements.txt
-RUN python3 -m pip install --requirement /app/requirements.txt
+# --upgrade ensures the exact application pins win over transitive packages
+# installed by the PaddlePaddle/PaddleOCR stack above.
+RUN python3 -m pip install --upgrade --requirement /app/requirements.txt
 
 # Download device-independent model weights with the CPU PaddlePaddle build.
 RUN python3 -m pip install --no-cache-dir --target /opt/bake-deps \
