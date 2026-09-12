@@ -46,6 +46,26 @@ RUN python3 -m pip install --no-cache-dir --target /opt/bake-deps \
        python3 -c "from paddleocr import PaddleOCRVL; PaddleOCRVL(pipeline_version='v1.6', device='cpu')" \
     && rm -rf /opt/bake-deps
 
+# Verify the final system environment after every dependency installation,
+# including the runtime dependencies and the GPU PaddlePaddle package.
+# Keep pip check strict so an inconsistent image fails during the build.
+RUN set -eux; \
+    echo '=== Final dependency versions ==='; \
+    python3 -m pip show \
+        paddlepaddle-gpu \
+        paddleocr \
+        paddlex \
+        msgpack \
+        protobuf \
+        setuptools \
+        requests \
+        Pillow \
+        PyMuPDF; \
+    echo '=== Final installed package list ==='; \
+    python3 -m pip list --format=columns; \
+    echo '=== Final dependency consistency check ==='; \
+    python3 -m pip check
+
 COPY . /app/
 
 RUN mkdir -p \
