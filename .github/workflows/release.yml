@@ -67,6 +67,9 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          # Expose Dockerfile RUN output, including pip show/list/check,
+          # in the GitHub Actions log for dependency diagnostics.
+          progress: plain
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_CANDIDATE_TAG }}
           labels: |
