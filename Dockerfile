@@ -55,6 +55,7 @@ RUN set -eux; \
         paddlepaddle-gpu \
         paddleocr \
         paddlex \
+        anyio \
         msgpack \
         protobuf \
         setuptools \
