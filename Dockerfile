@@ -46,9 +46,9 @@ RUN python3 -m pip install --no-cache-dir --target /opt/bake-deps \
        python3 -c "from paddleocr import PaddleOCRVL; PaddleOCRVL(pipeline_version='v1.6', device='cpu')" \
     && rm -rf /opt/bake-deps
 
-# Verify the final system environment after every dependency installation,
-# including the runtime dependencies and the GPU PaddlePaddle package.
-# Keep pip check strict so an inconsistent image fails during the build.
+# Verify the final environment after all dependency installation and model
+# baking steps. Keep pip check strict so an inconsistent image fails during
+# the Docker build.
 RUN set -eux; \
     echo '=== Final dependency versions ==='; \
     python3 -m pip show \
