@@ -83,13 +83,12 @@ jobs:
             org.opencontainers.image.created=${{ steps.metadata.outputs.created }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Diagnostic mode: disable BuildKit attestations temporarily so the
-          # Trivy result can be compared against a filesystem-only image.
-          provenance: false
-          sbom: false
+          # Production images retain BuildKit supply-chain attestations.
+          provenance: true
+          sbom: true
 
-      # With attestations disabled, resolve the linux/amd64 image digest and
-      # scan that exact image rather than a mutable tag.
+      # Resolve the linux/amd64 image digest and scan that exact image rather
+      # than a mutable tag.
       - name: Resolve platform manifest digest
         id: resolve
         env:
@@ -245,15 +244,6 @@ jobs:
               ((.Vulnerabilities // [])[]
                | "  - \(.VulnerabilityID) \(.Severity) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "-")")
           ' trivy-rootfs-report.json || true
-
-      - name: Upload Trivy image report
-        if: always() && inputs.run_image_diagnostic == true
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-image-report
-          path: trivy-image-report.json
-          if-no-files-found: warn
-          retention-days: 14
 
       - name: Upload Trivy filesystem report
         if: always()
