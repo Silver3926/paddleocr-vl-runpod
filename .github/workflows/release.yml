@@ -16,6 +16,12 @@ on:
       - url_security.py
       - .github/workflows/release.yml
   workflow_dispatch:
+    inputs:
+      run_image_diagnostic:
+        description: "Run the optional Trivy image diagnostic scan"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -114,10 +120,10 @@ jobs:
           echo "Scan target: ${IMAGE}@${DIGEST}"
           echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
 
-      # Report-only diagnostic scan. The exported-rootfs scan below is the
-      # blocking package vulnerability gate because this image scan can include
-      # stale/inherited SBOM inventory from the base image.
-      - name: Scan candidate image with Trivy (report only)
+      # Optional diagnostic only. The exported-rootfs scan below remains the
+      # blocking package vulnerability gate for release promotion.
+      - name: Scan candidate image with Trivy (optional report only)
+        if: inputs.run_image_diagnostic == true
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.resolve.outputs.digest }}
@@ -130,7 +136,7 @@ jobs:
           severity: CRITICAL,HIGH
 
       - name: Summarize Trivy image findings
-        if: always()
+        if: always() && inputs.run_image_diagnostic == true
         run: |
           set -euo pipefail
 
@@ -139,7 +145,7 @@ jobs:
             exit 0
           fi
 
-          echo "=== Ringkasan image scan (report only) ==="
+          echo "=== Ringkasan image scan (optional report only) ==="
           jq -r '
             [.Results[]?.Vulnerabilities[]?] as $v
             | "total=\($v | length) critical=\([$v[] | select(.Severity == "CRITICAL")] | length) high=\([$v[] | select(.Severity == "HIGH")] | length)"
@@ -241,7 +247,7 @@ jobs:
           ' trivy-rootfs-report.json || true
 
       - name: Upload Trivy image report
-        if: always()
+        if: always() && inputs.run_image_diagnostic == true
         uses: actions/upload-artifact@v4
         with:
           name: trivy-image-report
