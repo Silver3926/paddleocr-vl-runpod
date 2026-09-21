@@ -67,6 +67,23 @@ RUN set -eux; \
     echo '=== Final dependency consistency check ==='; \
     python3 -m pip check
 
+# Print the importlib-resolved locations so duplicate or stale metadata can be
+# distinguished from the package version used by the final Python environment.
+RUN python3 - <<'PY'
+from importlib.metadata import distribution
+
+for name in ("msgpack", "setuptools"):
+    dist = distribution(name)
+    print(f"{name}: version={dist.version}")
+    print(f"{name}: location={dist.locate_file('')}")
+PY
+
+# List every relevant dist-info directory in the final image filesystem.
+RUN find /usr/local /usr/lib /opt \
+    \( -type d -name 'msgpack*.dist-info' \
+    -o -type d -name 'setuptools*.dist-info' \) \
+    -print
+
 COPY . /app/
 
 RUN mkdir -p \
