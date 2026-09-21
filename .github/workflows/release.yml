@@ -62,6 +62,7 @@ jobs:
         run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push candidate image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -78,10 +79,45 @@ jobs:
           provenance: true
           sbom: true
 
+      # Diagnostik sementara (Varian C): arahkan scan ke digest manifest
+      # linux/amd64, bukan ke tag/index. Dengan begitu Trivy tidak dapat
+      # membaca attestation manifest (provenance/SBOM) yang inventory-nya
+      # sebelumnya menghasilkan temuan msgpack 1.1.2 dan setuptools 70.3.0.
+      - name: Resolve platform manifest digest
+        id: resolve
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          CANDIDATE_TAG: ${{ env.IMAGE_CANDIDATE_TAG }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          REF="${IMAGE}:${CANDIDATE_TAG}"
+          RAW="$(docker buildx imagetools inspect "${REF}" --raw)"
+
+          if jq -e '.manifests' >/dev/null <<<"${RAW}"; then
+            DIGEST="$(jq -r '(.manifests // [])
+              | map(select(.platform.os == "linux" and .platform.architecture == "amd64"))
+              | first
+              | .digest // empty' <<<"${RAW}")"
+          else
+            # Bukan index (manifest tunggal tanpa attestation): pakai digest build.
+            DIGEST="${BUILD_DIGEST}"
+          fi
+
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::Tidak dapat menemukan digest manifest linux/amd64 untuk ${REF}"
+            echo "Raw manifest:"
+            echo "${RAW}"
+            exit 1
+          fi
+
+          echo "Scan target: ${IMAGE}@${DIGEST}"
+          echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
+
       - name: Scan candidate image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_CANDIDATE_TAG }}
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.resolve.outputs.digest }}
           format: table
           exit-code: "1"
           ignore-unfixed: true
