@@ -114,16 +114,56 @@ jobs:
           echo "Scan target: ${IMAGE}@${DIGEST}"
           echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
 
+      # Gate keamanan. Output JSON disimpan sebagai artifact supaya setiap
+      # temuan bisa ditelusuri sampai Target/PkgIdentifier/Layer-nya dan
+      # tidak bergantung pada ringkasan tabel di log.
       - name: Scan candidate image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.resolve.outputs.digest }}
-          format: table
+          format: json
+          output: trivy-image-report.json
           exit-code: "1"
           ignore-unfixed: true
           vuln-type: os,library
           scanners: vuln,misconfig,secret
           severity: CRITICAL,HIGH
+
+      # Dengan format JSON, detail tidak lagi tercetak otomatis ke log.
+      # Step ini mengembalikan ringkasannya agar log tetap informatif.
+      - name: Summarize Trivy findings
+        if: always()
+        run: |
+          set -euo pipefail
+
+          if [ ! -s trivy-image-report.json ]; then
+            echo "Laporan Trivy tidak tersedia."
+            exit 0
+          fi
+
+          echo "=== Ringkasan ==="
+          jq -r '
+            [.Results[]?.Vulnerabilities[]?] as $v
+            | "total=\($v | length) critical=\([$v[] | select(.Severity == "CRITICAL")] | length) high=\([$v[] | select(.Severity == "HIGH")] | length)"
+          ' trivy-image-report.json || true
+
+          echo "=== Temuan per target ==="
+          jq -r '
+            .Results[]?
+            | select((.Vulnerabilities // []) | length > 0)
+            | "\(.Target) [\(.Type)]",
+              ((.Vulnerabilities // [])[]
+               | "  - \(.VulnerabilityID) \(.Severity) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "-")")
+          ' trivy-image-report.json || true
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-image-report
+          path: trivy-image-report.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Promote scanned image to production tags
         env:
