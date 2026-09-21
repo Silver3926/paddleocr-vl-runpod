@@ -114,8 +114,8 @@ jobs:
           echo "Scan target: ${IMAGE}@${DIGEST}"
           echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
 
-      # Diagnostic gate: compare this filesystem-only scan with the previous
-      # scan that included BuildKit SBOM/provenance attestations.
+      # Diagnostic gate: compare this image scan with the filesystem-only scan
+      # below. This scan may fail; the rootfs scan still runs for diagnosis.
       - name: Scan candidate image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -128,23 +128,23 @@ jobs:
           scanners: vuln,misconfig,secret
           severity: CRITICAL,HIGH
 
-      - name: Summarize Trivy findings
+      - name: Summarize Trivy image findings
         if: always()
         run: |
           set -euo pipefail
 
           if [ ! -s trivy-image-report.json ]; then
-            echo "Laporan Trivy tidak tersedia."
+            echo "Laporan Trivy image tidak tersedia."
             exit 0
           fi
 
-          echo "=== Ringkasan ==="
+          echo "=== Ringkasan image scan ==="
           jq -r '
             [.Results[]?.Vulnerabilities[]?] as $v
             | "total=\($v | length) critical=\([$v[] | select(.Severity == "CRITICAL")] | length) high=\([$v[] | select(.Severity == "HIGH")] | length)"
           ' trivy-image-report.json || true
 
-          echo "=== Temuan per target ==="
+          echo "=== Temuan image per target ==="
           jq -r '
             .Results[]?
             | select((.Vulnerabilities // []) | length > 0)
@@ -153,12 +153,106 @@ jobs:
                | "  - \(.VulnerabilityID) \(.Severity) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "-")")
           ' trivy-image-report.json || true
 
-      - name: Upload Trivy report
+      - name: Export candidate filesystem
+        id: export-rootfs
+        if: always() && steps.resolve.outcome == 'success'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          IMAGE_DIGEST: ${{ steps.resolve.outputs.digest }}
+          CONTAINER_NAME: trivy-rootfs-${{ github.run_id }}
+          ROOTFS_DIR: ${{ runner.temp }}/candidate-rootfs
+          ROOTFS_TAR: ${{ runner.temp }}/candidate-rootfs.tar
+        run: |
+          set -euo pipefail
+
+          rm -rf "${ROOTFS_DIR}" "${ROOTFS_TAR}"
+          mkdir -p "${ROOTFS_DIR}"
+
+          cleanup() {
+            docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          IMAGE_REF="${IMAGE}@${IMAGE_DIGEST}"
+          echo "Pulling ${IMAGE_REF}"
+          docker pull "${IMAGE_REF}"
+
+          echo "Creating stopped container"
+          docker create --name "${CONTAINER_NAME}" "${IMAGE_REF}" >/dev/null
+
+          echo "Exporting container root filesystem"
+          docker export "${CONTAINER_NAME}" --output "${ROOTFS_TAR}"
+
+          echo "Extracting root filesystem"
+          tar --extract --file "${ROOTFS_TAR}" --directory "${ROOTFS_DIR}"
+
+          echo "=== Package metadata found in exported rootfs ==="
+          find "${ROOTFS_DIR}/usr/local" \
+               "${ROOTFS_DIR}/usr/lib" \
+               "${ROOTFS_DIR}/opt" \
+               -type d \
+               \( -name 'msgpack*.dist-info' \
+               -o -name 'setuptools*.dist-info' \) \
+               -print || true
+
+          echo "rootfs_dir=${ROOTFS_DIR}" >> "${GITHUB_OUTPUT}"
+
+      # docker export contains only the container filesystem; it does not carry
+      # the OCI image index or BuildKit SBOM/provenance attestations.
+      - name: Scan exported filesystem with Trivy
+        if: always() && steps.export-rootfs.outcome == 'success'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ steps.export-rootfs.outputs.rootfs_dir }}
+          format: json
+          output: trivy-rootfs-report.json
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          scanners: vuln
+          severity: CRITICAL,HIGH
+
+      - name: Summarize Trivy filesystem findings
+        if: always()
+        run: |
+          set -euo pipefail
+
+          if [ ! -s trivy-rootfs-report.json ]; then
+            echo "Laporan Trivy filesystem tidak tersedia."
+            exit 0
+          fi
+
+          echo "=== Ringkasan filesystem scan ==="
+          jq -r '
+            [.Results[]?.Vulnerabilities[]?] as $v
+            | "total=\($v | length) critical=\([$v[] | select(.Severity == "CRITICAL")] | length) high=\([$v[] | select(.Severity == "HIGH")] | length)"
+          ' trivy-rootfs-report.json || true
+
+          echo "=== Temuan filesystem per target ==="
+          jq -r '
+            .Results[]?
+            | select((.Vulnerabilities // []) | length > 0)
+            | "\(.Target) [\(.Type)]",
+              ((.Vulnerabilities // [])[]
+               | "  - \(.VulnerabilityID) \(.Severity) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "-")")
+          ' trivy-rootfs-report.json || true
+
+      - name: Upload Trivy image report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-image-report
           path: trivy-image-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Trivy filesystem report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-rootfs-report
+          path: trivy-rootfs-report.json
           if-no-files-found: warn
           retention-days: 14
 
