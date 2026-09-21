@@ -68,6 +68,7 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          progress: plain
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_CANDIDATE_TAG }}
           labels: |
@@ -76,13 +77,13 @@ jobs:
             org.opencontainers.image.created=${{ steps.metadata.outputs.created }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: true
-          sbom: true
+          # Diagnostic mode: disable BuildKit attestations temporarily so the
+          # Trivy result can be compared against a filesystem-only image.
+          provenance: false
+          sbom: false
 
-      # Diagnostik sementara (Varian C): arahkan scan ke digest manifest
-      # linux/amd64, bukan ke tag/index. Dengan begitu Trivy tidak dapat
-      # membaca attestation manifest (provenance/SBOM) yang inventory-nya
-      # sebelumnya menghasilkan temuan msgpack 1.1.2 dan setuptools 70.3.0.
+      # With attestations disabled, resolve the linux/amd64 image digest and
+      # scan that exact image rather than a mutable tag.
       - name: Resolve platform manifest digest
         id: resolve
         env:
@@ -100,7 +101,6 @@ jobs:
               | first
               | .digest // empty' <<<"${RAW}")"
           else
-            # Bukan index (manifest tunggal tanpa attestation): pakai digest build.
             DIGEST="${BUILD_DIGEST}"
           fi
 
@@ -114,9 +114,8 @@ jobs:
           echo "Scan target: ${IMAGE}@${DIGEST}"
           echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
 
-      # Gate keamanan. Output JSON disimpan sebagai artifact supaya setiap
-      # temuan bisa ditelusuri sampai Target/PkgIdentifier/Layer-nya dan
-      # tidak bergantung pada ringkasan tabel di log.
+      # Diagnostic gate: compare this filesystem-only scan with the previous
+      # scan that included BuildKit SBOM/provenance attestations.
       - name: Scan candidate image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -129,8 +128,6 @@ jobs:
           scanners: vuln,misconfig,secret
           severity: CRITICAL,HIGH
 
-      # Dengan format JSON, detail tidak lagi tercetak otomatis ke log.
-      # Step ini mengembalikan ringkasannya agar log tetap informatif.
       - name: Summarize Trivy findings
         if: always()
         run: |
