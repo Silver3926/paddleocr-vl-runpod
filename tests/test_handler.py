@@ -101,11 +101,13 @@ def test_process_pdf_runs_batches_sequentially_and_preserves_pages(
     class BatchPipeline:
         def __init__(self):
             self.inputs = []
+            self.batch_page_counts = []
 
         def predict(self, input):
             self.inputs.append(input)
             batch_document = fitz.open(input)
             try:
+                self.batch_page_counts.append(batch_document.page_count)
                 return [
                     {"markdown": f"page {index + 1}"}
                     for index in range(batch_document.page_count)
@@ -129,6 +131,7 @@ def test_process_pdf_runs_batches_sequentially_and_preserves_pages(
         "batch-0002.pdf",
         "batch-0003.pdf",
     ]
+    assert fake_pipeline.batch_page_counts == [2, 2, 1]
     assert result[2:] == (6, 2, 6, 3)
     assert "<!-- Page 2 -->" in result[0]
     assert "<!-- Page 6 -->" in result[0]
