@@ -104,7 +104,14 @@ def test_process_pdf_runs_batches_sequentially_and_preserves_pages(
 
         def predict(self, input):
             self.inputs.append(input)
-            return [{"markdown": Path(input).stem}]
+            batch_document = fitz.open(input)
+            try:
+                return [
+                    {"markdown": f"page {index + 1}"}
+                    for index in range(batch_document.page_count)
+                ]
+            finally:
+                batch_document.close()
 
         def restructure_pages(self, pages, **kwargs):
             return pages
