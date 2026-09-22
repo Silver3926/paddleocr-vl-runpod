@@ -150,15 +150,30 @@ def validate_pdf(pdf_path: Path) -> int:
 
 
 def split_pdf_batch(
-    source_pdf: Path,
+    source_pdf: Path | fitz.Document,
     destination_pdf: Path,
     batch: PdfBatch,
 ) -> Path:
-    """Create a temporary PDF for a one-based inclusive batch range."""
+    """Create a temporary PDF from a one-based inclusive batch range.
 
-    source = fitz.open(str(source_pdf))
+    A caller that processes multiple batches should pass an already-open
+    ``fitz.Document`` so the source PDF is not reopened for every batch.
+    Passing a Path remains supported for one-off use and preserves ownership
+    of the document inside this function.
+    """
+
+    owns_source = isinstance(source_pdf, (str, Path))
+    source = fitz.open(str(source_pdf)) if owns_source else source_pdf
     batch_document = fitz.open()
     try:
+        if not isinstance(source, fitz.Document):
+            raise TypeError("source_pdf must be a Path or fitz.Document.")
+        if batch.page_start < 1 or batch.page_end < batch.page_start:
+            raise ValueError("Invalid PDF batch page range.")
+        if batch.page_end > source.page_count:
+            raise ValueError("PDF batch page range exceeds source document.")
+
+        destination_pdf.parent.mkdir(parents=True, exist_ok=True)
         batch_document.insert_pdf(
             source,
             from_page=batch.page_start - 1,
@@ -167,7 +182,8 @@ def split_pdf_batch(
         batch_document.save(str(destination_pdf))
     finally:
         batch_document.close()
-        source.close()
+        if owns_source:
+            source.close()
 
     return destination_pdf
 
