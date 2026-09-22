@@ -47,7 +47,7 @@ def _positive_int(value: Any, field_name: str) -> int:
 def parse_pdf_batch_options(
     input_data: Mapping[str, Any],
 ) -> PdfBatchOptions:
-    """Parse the public PDF batching contract without touching the PDF yet."""
+    """Parse the public PDF batching contract."""
 
     page_start = _optional_positive_int(
         input_data.get("page_start"),
@@ -57,8 +57,10 @@ def parse_pdf_batch_options(
         input_data.get("page_end"),
         "page_end",
     )
-    batch_size = input_data.get("batch_size", PDF_BATCH_SIZE)
-    batch_size = _positive_int(batch_size, "batch_size")
+    batch_size = _positive_int(
+        input_data.get("batch_size", PDF_BATCH_SIZE),
+        "batch_size",
+    )
 
     if batch_size > MAX_PDF_BATCH_SIZE:
         raise ValueError(
@@ -114,7 +116,7 @@ def build_pdf_batches(
 ) -> list[PdfBatch]:
     """Build ordered batches from a one-based inclusive page range."""
 
-    resolved_start, resolved_end = resolve_page_range(
+    page_start, page_end = resolve_page_range(
         total_pages=page_end,
         page_start=page_start,
         page_end=page_end,
@@ -126,10 +128,10 @@ def build_pdf_batches(
         )
 
     batches = []
-    current_page = resolved_start
+    current_page = page_start
     batch_number = 1
-    while current_page <= resolved_end:
-        current_end = min(current_page + batch_size - 1, resolved_end)
+    while current_page <= page_end:
+        current_end = min(current_page + batch_size - 1, page_end)
         batches.append(
             PdfBatch(
                 batch_id=f"batch-{batch_number:04d}",

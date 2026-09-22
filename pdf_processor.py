@@ -15,6 +15,7 @@ from config import (
     MAX_PDF_PAGES,
     TEMP_DIR,
 )
+from pdf_batching import PdfBatch
 from url_security import validate_remote_url
 
 logger = logging.getLogger(__name__)
@@ -146,6 +147,29 @@ def validate_pdf(pdf_path: Path) -> int:
             f"PDF contains too many pages (maximum: {MAX_PDF_PAGES})."
         )
     return page_count
+
+
+def split_pdf_batch(
+    source_pdf: Path,
+    destination_pdf: Path,
+    batch: PdfBatch,
+) -> Path:
+    """Create a temporary PDF for a one-based inclusive batch range."""
+
+    source = fitz.open(str(source_pdf))
+    batch_document = fitz.open()
+    try:
+        batch_document.insert_pdf(
+            source,
+            from_page=batch.page_start - 1,
+            to_page=batch.page_end - 1,
+        )
+        batch_document.save(str(destination_pdf))
+    finally:
+        batch_document.close()
+        source.close()
+
+    return destination_pdf
 
 
 def validate_image(image_path: Path) -> None:

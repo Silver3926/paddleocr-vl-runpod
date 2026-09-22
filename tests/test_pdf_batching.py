@@ -1,10 +1,22 @@
+import fitz
 import pytest
 
 from pdf_batching import (
+    PdfBatch,
     build_pdf_batches,
     parse_pdf_batch_options,
     resolve_page_range,
 )
+from pdf_processor import split_pdf_batch
+
+
+def create_test_pdf(path, page_count):
+    document = fitz.open()
+    for index in range(page_count):
+        page = document.new_page()
+        page.insert_text((72, 72), f"Page {index + 1}")
+    document.save(path)
+    document.close()
 
 
 def test_parse_defaults():
@@ -78,6 +90,26 @@ def test_build_batches_non_one_start():
         (17, 19),
         (20, 20),
     ]
+
+
+def test_split_pdf_batch_uses_one_based_inclusive_range(tmp_path):
+    source = tmp_path / "source.pdf"
+    destination = tmp_path / "batch.pdf"
+    create_test_pdf(source, page_count=5)
+
+    split_pdf_batch(
+        source_pdf=source,
+        destination_pdf=destination,
+        batch=PdfBatch("batch-0001", 2, 4),
+    )
+
+    result = fitz.open(destination)
+    try:
+        assert len(result) == 3
+        assert "Page 2" in result[0].get_text()
+        assert "Page 4" in result[2].get_text()
+    finally:
+        result.close()
 
 
 @pytest.mark.parametrize(

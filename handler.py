@@ -18,10 +18,17 @@ from config import (
     RETURN_JSON,
     TEMP_DIR,
 )
+from pdf_batching import (
+    PdfBatchOptions,
+    build_pdf_batches,
+    parse_pdf_batch_options,
+    resolve_page_range,
+)
 from pdf_processor import (
     cleanup_job_directory,
     create_job_directory,
     download_file,
+    split_pdf_batch,
     validate_input_file,
 )
 
@@ -99,16 +106,55 @@ def process_results(results: list[Any]) -> tuple[str, list[Any]]:
     return "\n\n".join(markdown_parts), json_results
 
 
-def process_pdf(pdf_path: Path) -> tuple[str, list[Any], int]:
-    page_count = validate_input_file(pdf_path, "pdf")
-    pages = list(pipeline.predict(input=str(pdf_path)))
-    if not pages:
-        raise ValueError("PaddleOCR-VL returned no results.")
+def process_pdf(
+    pdf_path: Path,
+    pipeline_instance: Any,
+    batch_options: PdfBatchOptions,
+) -> tuple[str, list[Any], int, int]:
+    total_pages = validate_input_file(pdf_path, "pdf")
+    page_start, page_end = resolve_page_range(
+        total_pages=total_pages,
+        page_start=batch_options.page_start,
+        page_end=batch_options.page_end,
+    )
+    batches = build_pdf_batches(
+        page_start=page_start,
+        page_end=page_end,
+        batch_size=batch_options.batch_size,
+    )
+
+    pages = []
+    for batch in batches:
+        batch_path = pdf_path.parent / f"{batch.batch_id}.pdf"
+        try:
+            split_pdf_batch(
+                source_pdf=pdf_path,
+                destination_pdf=batch_path,
+                batch=batch,
+            )
+            logger.info(
+                "Processing %s: pages %s-%s (%s/%s)",
+                batch.batch_id,
+                batch.page_start,
+                batch.page_end,
+                len(pages) + 1,
+                len(batches),
+            )
+            batch_pages = list(
+                pipeline_instance.predict(input=str(batch_path))
+            )
+            if not batch_pages:
+                raise ValueError(
+                    f"PaddleOCR-VL returned no results for {batch.batch_id}."
+                )
+            pages.extend(batch_pages)
+        finally:
+            batch_path.unlink(missing_ok=True)
 
     processed_results = pages
     if len(pages) > 1:
         try:
-            restructured = pipeline.restructure_pages(
+            restructured = pipeline_instance.restructure_pages(
                 pages,
                 merge_tables=MERGE_TABLES,
                 relevel_titles=RELEVEL_TITLES,
@@ -121,7 +167,7 @@ def process_pdf(pdf_path: Path) -> tuple[str, list[Any], int]:
             logger.warning("Multi-page restructuring failed; using page results.")
 
     markdown, results = process_results(processed_results)
-    return markdown, results, page_count
+    return markdown, results, page_end - page_start + 1, len(batches)
 
 
 def process_image(image_path: Path) -> tuple[str, list[Any]]:
@@ -184,8 +230,10 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     try:
         if image_url:
             image_url = validate_url_input(image_url, "image_url")
+            batch_options = None
         else:
             pdf_url = validate_url_input(pdf_url, "pdf_url")
+            batch_options = parse_pdf_batch_options(job_input)
     except ValueError as exc:
         return public_error(str(exc), "INVALID_INPUT")
 
@@ -203,11 +251,18 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         else:
             pdf_path = job_dir / "input.pdf"
             download_file(pdf_url, pdf_path)
-            markdown, results, page_count = process_pdf(pdf_path)
+            markdown, results, page_count, batch_count = process_pdf(
+                pdf_path,
+                pipeline,
+                batch_options,
+            )
             response = {
                 "success": True,
                 "type": "pdf",
                 "pages": page_count,
+                "batches": batch_count,
+                "page_start": batch_options.page_start or 1,
+                "page_end": batch_options.page_end or page_count,
                 "markdown": markdown,
             }
 
