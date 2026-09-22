@@ -18,7 +18,12 @@ from config import (
     RETURN_JSON,
     TEMP_DIR,
 )
-from pdf_batching import PdfBatchOptions, parse_pdf_batch_options, build_pdf_batches, resolve_page_range
+from pdf_batching import (
+    PdfBatchOptions,
+    build_pdf_batches,
+    parse_pdf_batch_options,
+    resolve_page_range,
+)
 from pdf_processor import (
     cleanup_job_directory,
     create_job_directory,
@@ -27,18 +32,12 @@ from pdf_processor import (
     validate_input_file,
 )
 
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO), format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
 logger.info("Initializing PaddleOCR-VL version %s on %s", PIPELINE_VERSION, DEVICE)
 try:
-    pipeline = PaddleOCRVL(
-        pipeline_version=PIPELINE_VERSION,
-        device=DEVICE,
-    )
+    pipeline = PaddleOCRVL(pipeline_version=PIPELINE_VERSION, device=DEVICE)
 except Exception as exc:
     logger.exception("Failed to initialize PaddleOCR-VL.")
     raise RuntimeError("PaddleOCR-VL initialization failed.") from exc
@@ -86,85 +85,74 @@ def get_result_json(result: Any) -> Any:
     return make_json_safe(value)
 
 
-def process_results(results: list[Any]) -> tuple[str, list[Any]]:
+def process_results(results: list[Any], page_numbers: list[int | list[int]] | None = None) -> tuple[str, list[Any]]:
+    """Serialize results while retaining original PDF page numbers when given."""
+    if page_numbers is not None and len(page_numbers) != len(results):
+        raise ValueError("Page number metadata does not match result count.")
+
     markdown_parts = []
     json_results = []
     for index, result in enumerate(results, start=1):
         markdown = get_result_markdown(result)
+        page_number = None if page_numbers is None else page_numbers[index - 1]
         if markdown:
-            markdown_parts.append(f"<!-- Result {index} -->\n\n{markdown}")
+            if page_number is None:
+                marker = f"<!-- Result {index} -->"
+            elif isinstance(page_number, list):
+                marker = f"<!-- Pages {page_number[0]}-{page_number[-1]} -->"
+            else:
+                marker = f"<!-- Page {page_number} -->"
+            markdown_parts.append(f"{marker}\n\n{markdown}")
         if RETURN_JSON:
-            json_results.append({"result": get_result_json(result)})
+            item = {"result": get_result_json(result)}
+            if page_number is not None:
+                item["page_numbers"] = page_number if isinstance(page_number, list) else [page_number]
+            json_results.append(item)
     return "\n\n".join(markdown_parts), json_results
 
 
-def process_pdf(
-    pdf_path: Path,
-    pipeline_instance: Any,
-    batch_options: PdfBatchOptions,
-) -> tuple[str, list[Any], int, int, int, int]:
+def process_pdf(pdf_path: Path, pipeline_instance: Any, batch_options: PdfBatchOptions) -> tuple[str, list[Any], int, int, int, int]:
     total_pages = validate_input_file(pdf_path, "pdf")
-    page_start, page_end = resolve_page_range(
-        total_pages=total_pages,
-        page_start=batch_options.page_start,
-        page_end=batch_options.page_end,
-    )
-    batches = build_pdf_batches(
-        page_start=page_start,
-        page_end=page_end,
-        batch_size=batch_options.batch_size,
-    )
+    page_start, page_end = resolve_page_range(total_pages, batch_options.page_start, batch_options.page_end)
+    batches = build_pdf_batches(page_start, page_end, batch_options.batch_size)
 
     pages = []
+    page_numbers: list[int] = []
     for batch_index, batch in enumerate(batches, start=1):
         batch_path = pdf_path.parent / f"{batch.batch_id}.pdf"
         try:
-            split_pdf_batch(
-                source_pdf=pdf_path,
-                destination_pdf=batch_path,
-                batch=batch,
-            )
-            logger.info(
-                "Processing %s: pages %s-%s (%s/%s)",
-                batch.batch_id,
-                batch.page_start,
-                batch.page_end,
-                batch_index,
-                len(batches),
-            )
+            split_pdf_batch(pdf_path, batch_path, batch)
+            logger.info("Processing %s: pages %s-%s (%s/%s)", batch.batch_id, batch.page_start, batch.page_end, batch_index, len(batches))
             batch_pages = list(pipeline_instance.predict(input=str(batch_path)))
             if not batch_pages:
-                raise ValueError(
-                    f"PaddleOCR-VL returned no results for {batch.batch_id}."
-                )
+                raise ValueError(f"PaddleOCR-VL returned no results for {batch.batch_id}.")
             pages.extend(batch_pages)
+            page_numbers.extend(range(batch.page_start, batch.page_end + 1))
         finally:
             batch_path.unlink(missing_ok=True)
 
     processed_results = pages
+    processed_page_numbers: list[int | list[int]] = list(page_numbers)
     if len(pages) > 1:
         try:
-            restructured = pipeline_instance.restructure_pages(
+            restructured_results = list(pipeline_instance.restructure_pages(
                 pages,
                 merge_tables=MERGE_TABLES,
                 relevel_titles=RELEVEL_TITLES,
                 concatenate_pages=CONCATENATE_PAGES,
-            )
-            restructured_results = list(restructured)
-            if restructured_results:
+            ))
+            if len(restructured_results) == len(page_numbers):
                 processed_results = restructured_results
+            elif len(restructured_results) == 1:
+                processed_results = restructured_results
+                processed_page_numbers = [list(page_numbers)]
+            else:
+                logger.warning("Multi-page restructuring returned %s results for %s pages; using page-level results to preserve page numbers.", len(restructured_results), len(page_numbers))
         except Exception:
             logger.warning("Multi-page restructuring failed; using page results.")
 
-    markdown, results = process_results(processed_results)
-    return (
-        markdown,
-        results,
-        total_pages,
-        page_start,
-        page_end,
-        len(batches),
-    )
+    markdown, results = process_results(processed_results, page_numbers=processed_page_numbers)
+    return markdown, results, total_pages, page_start, page_end, len(batches)
 
 
 def process_image(image_path: Path) -> tuple[str, list[Any]]:
@@ -185,16 +173,10 @@ def validate_url_input(value: Any, field_name: str) -> str:
 
 def response_with_size_limit(response: dict[str, Any]) -> dict[str, Any]:
     try:
-        payload = json.dumps(
-            response,
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
+        payload = json.dumps(response, ensure_ascii=False, allow_nan=False).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise ValueError("OCR response could not be serialized as JSON.") from exc
-
-    limit = MAX_OUTPUT_SIZE_MB * 1024 * 1024
-    if len(payload) > limit:
+    if len(payload) > MAX_OUTPUT_SIZE_MB * 1024 * 1024:
         raise OutputTooLargeError("OCR response exceeds the configured size limit.")
     return response
 
@@ -206,20 +188,14 @@ def public_error(message: str, code: str) -> dict[str, Any]:
 def handler(job: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(job, dict):
         return public_error("RunPod job must be an object.", "INVALID_JOB")
-
     job_id = job.get("id", str(uuid.uuid4()))
     job_input = job.get("input", {})
     if not isinstance(job_input, dict):
         return public_error("input must be an object.", "INVALID_INPUT")
-
     image_url = job_input.get("image_url")
     pdf_url = job_input.get("pdf_url")
     if bool(image_url) == bool(pdf_url):
-        return public_error(
-            "Provide exactly one of 'image_url' or 'pdf_url'.",
-            "INVALID_INPUT",
-        )
-
+        return public_error("Provide exactly one of 'image_url' or 'pdf_url'.", "INVALID_INPUT")
     try:
         if image_url:
             image_url = validate_url_input(image_url, "image_url")
@@ -236,22 +212,11 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
             image_path = job_dir / "input_image"
             download_file(image_url, image_path)
             markdown, results = process_image(image_path)
-            response = {
-                "success": True,
-                "type": "image",
-                "markdown": markdown,
-            }
+            response = {"success": True, "type": "image", "markdown": markdown}
         else:
             pdf_path = job_dir / "input.pdf"
             download_file(pdf_url, pdf_path)
-            (
-                markdown,
-                results,
-                total_pages,
-                page_start,
-                page_end,
-                batch_count,
-            ) = process_pdf(pdf_path, pipeline, batch_options)
+            markdown, results, total_pages, page_start, page_end, batch_count = process_pdf(pdf_path, pipeline, batch_options)
             response = {
                 "success": True,
                 "type": "pdf",
@@ -262,17 +227,12 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
                 "page_end": page_end,
                 "markdown": markdown,
             }
-
         if RETURN_JSON:
             response["results"] = results
         return response_with_size_limit(response)
-
     except OutputTooLargeError:
         logger.exception("Job output exceeded MAX_OUTPUT_SIZE_MB.")
-        return public_error(
-            "OCR output is too large for an inline response.",
-            "OUTPUT_TOO_LARGE",
-        )
+        return public_error("OCR output is too large for an inline response.", "OUTPUT_TOO_LARGE")
     except Exception:
         logger.exception("RunPod job failed: %s", job_id)
         return public_error("Document processing failed.", "PROCESSING_ERROR")
