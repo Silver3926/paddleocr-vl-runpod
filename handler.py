@@ -18,12 +18,7 @@ from config import (
     RETURN_JSON,
     TEMP_DIR,
 )
-from pdf_batching import (
-    PdfBatchOptions,
-    build_pdf_batches,
-    parse_pdf_batch_options,
-    resolve_page_range,
-)
+from pdf_batching import PdfBatchOptions, parse_pdf_batch_options, build_pdf_batches, resolve_page_range
 from pdf_processor import (
     cleanup_job_directory,
     create_job_directory,
@@ -57,10 +52,7 @@ def make_json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, dict):
-        return {
-            str(key): make_json_safe(item)
-            for key, item in value.items()
-        }
+        return {str(key): make_json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [make_json_safe(item) for item in value]
     if hasattr(value, "tolist"):
@@ -110,7 +102,7 @@ def process_pdf(
     pdf_path: Path,
     pipeline_instance: Any,
     batch_options: PdfBatchOptions,
-) -> tuple[str, list[Any], int, int]:
+) -> tuple[str, list[Any], int, int, int, int]:
     total_pages = validate_input_file(pdf_path, "pdf")
     page_start, page_end = resolve_page_range(
         total_pages=total_pages,
@@ -124,7 +116,7 @@ def process_pdf(
     )
 
     pages = []
-    for batch in batches:
+    for batch_index, batch in enumerate(batches, start=1):
         batch_path = pdf_path.parent / f"{batch.batch_id}.pdf"
         try:
             split_pdf_batch(
@@ -137,12 +129,10 @@ def process_pdf(
                 batch.batch_id,
                 batch.page_start,
                 batch.page_end,
-                len(pages) + 1,
+                batch_index,
                 len(batches),
             )
-            batch_pages = list(
-                pipeline_instance.predict(input=str(batch_path))
-            )
+            batch_pages = list(pipeline_instance.predict(input=str(batch_path)))
             if not batch_pages:
                 raise ValueError(
                     f"PaddleOCR-VL returned no results for {batch.batch_id}."
@@ -167,7 +157,14 @@ def process_pdf(
             logger.warning("Multi-page restructuring failed; using page results.")
 
     markdown, results = process_results(processed_results)
-    return markdown, results, page_end - page_start + 1, len(batches)
+    return (
+        markdown,
+        results,
+        total_pages,
+        page_start,
+        page_end,
+        len(batches),
+    )
 
 
 def process_image(image_path: Path) -> tuple[str, list[Any]]:
@@ -203,11 +200,7 @@ def response_with_size_limit(response: dict[str, Any]) -> dict[str, Any]:
 
 
 def public_error(message: str, code: str) -> dict[str, Any]:
-    return {
-        "success": False,
-        "error": message,
-        "error_code": code,
-    }
+    return {"success": False, "error": message, "error_code": code}
 
 
 def handler(job: dict[str, Any]) -> dict[str, Any]:
@@ -251,18 +244,22 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         else:
             pdf_path = job_dir / "input.pdf"
             download_file(pdf_url, pdf_path)
-            markdown, results, page_count, batch_count = process_pdf(
-                pdf_path,
-                pipeline,
-                batch_options,
-            )
+            (
+                markdown,
+                results,
+                total_pages,
+                page_start,
+                page_end,
+                batch_count,
+            ) = process_pdf(pdf_path, pipeline, batch_options)
             response = {
                 "success": True,
                 "type": "pdf",
-                "pages": page_count,
+                "pages": page_end - page_start + 1,
+                "document_pages": total_pages,
                 "batches": batch_count,
-                "page_start": batch_options.page_start or 1,
-                "page_end": batch_options.page_end or page_count,
+                "page_start": page_start,
+                "page_end": page_end,
                 "markdown": markdown,
             }
 
@@ -278,10 +275,7 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         )
     except Exception:
         logger.exception("RunPod job failed: %s", job_id)
-        return public_error(
-            "Document processing failed.",
-            "PROCESSING_ERROR",
-        )
+        return public_error("Document processing failed.", "PROCESSING_ERROR")
     finally:
         cleanup_job_directory(job_dir)
 
