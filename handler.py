@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import fitz
 import runpod
 from paddleocr import PaddleOCRVL
 
@@ -57,10 +58,7 @@ def make_json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, dict):
-        return {
-            str(key): make_json_safe(item)
-            for key, item in value.items()
-        }
+        return {str(key): make_json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [make_json_safe(item) for item in value]
     if hasattr(value, "tolist"):
@@ -116,10 +114,7 @@ def process_results(
             if page_number is None:
                 marker = f"<!-- Result {index} -->"
             elif isinstance(page_number, list):
-                marker = (
-                    f"<!-- Pages {page_number[0]}-"
-                    f"{page_number[-1]} -->"
-                )
+                marker = f"<!-- Pages {page_number[0]}-{page_number[-1]} -->"
             else:
                 marker = f"<!-- Page {page_number} -->"
             markdown_parts.append(f"{marker}\n\n{markdown}")
@@ -142,7 +137,7 @@ def process_pdf(
     pipeline_instance: Any,
     batch_options: PdfBatchOptions,
 ) -> tuple[str, list[Any], int, int, int, int]:
-    """Process the selected PDF pages batch by batch and merge their results."""
+    """Process selected PDF pages sequentially and merge their results."""
 
     total_pages = validate_input_file(pdf_path, "pdf")
     page_start, page_end = resolve_page_range(
@@ -158,42 +153,46 @@ def process_pdf(
 
     pages = []
     page_numbers: list[int] = []
-    for batch_index, batch in enumerate(batches, start=1):
-        batch_path = pdf_path.parent / f"{batch.batch_id}.pdf"
-        try:
-            split_pdf_batch(
-                source_pdf=pdf_path,
-                destination_pdf=batch_path,
-                batch=batch,
-            )
-            logger.info(
-                "Processing %s: pages %s-%s (%s/%s)",
-                batch.batch_id,
-                batch.page_start,
-                batch.page_end,
-                batch_index,
-                len(batches),
-            )
-
-            batch_pages = list(
-                pipeline_instance.predict(input=str(batch_path))
-            )
-            if not batch_pages:
-                raise ValueError(
-                    f"PaddleOCR-VL returned no results for {batch.batch_id}."
+    source_document = fitz.open(str(pdf_path))
+    try:
+        for batch_index, batch in enumerate(batches, start=1):
+            batch_path = pdf_path.parent / f"{batch.batch_id}.pdf"
+            try:
+                split_pdf_batch(
+                    source_pdf=source_document,
+                    destination_pdf=batch_path,
+                    batch=batch,
                 )
-            if len(batch_pages) != batch.page_count:
-                raise ValueError(
-                    f"PaddleOCR-VL returned {len(batch_pages)} results for "
-                    f"{batch.batch_id}, expected {batch.page_count}."
+                logger.info(
+                    "Processing %s: pages %s-%s (%s/%s)",
+                    batch.batch_id,
+                    batch.page_start,
+                    batch.page_end,
+                    batch_index,
+                    len(batches),
                 )
 
-            pages.extend(batch_pages)
-            page_numbers.extend(
-                range(batch.page_start, batch.page_end + 1)
-            )
-        finally:
-            batch_path.unlink(missing_ok=True)
+                batch_pages = list(
+                    pipeline_instance.predict(input=str(batch_path))
+                )
+                if not batch_pages:
+                    raise ValueError(
+                        f"PaddleOCR-VL returned no results for {batch.batch_id}."
+                    )
+                if len(batch_pages) != batch.page_count:
+                    raise ValueError(
+                        f"PaddleOCR-VL returned {len(batch_pages)} results for "
+                        f"{batch.batch_id}, expected {batch.page_count}."
+                    )
+
+                pages.extend(batch_pages)
+                page_numbers.extend(
+                    range(batch.page_start, batch.page_end + 1)
+                )
+            finally:
+                batch_path.unlink(missing_ok=True)
+    finally:
+        source_document.close()
 
     processed_results = pages
     processed_page_numbers: list[int | list[int]] = list(page_numbers)
@@ -224,11 +223,10 @@ def process_pdf(
                 "Multi-page restructuring failed; using page results."
             )
 
-    return_values = process_results(
+    markdown, results = process_results(
         processed_results,
         page_numbers=processed_page_numbers,
     )
-    markdown, results = return_values
     return (
         markdown,
         results,
