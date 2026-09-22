@@ -46,6 +46,44 @@ RUN python3 -m pip install --no-cache-dir --target /opt/bake-deps \
        python3 -c "from paddleocr import PaddleOCRVL; PaddleOCRVL(pipeline_version='v1.6', device='cpu')" \
     && rm -rf /opt/bake-deps
 
+# Verify the final environment after all dependency installation and model
+# baking steps. Keep pip check strict so an inconsistent image fails during
+# the Docker build.
+RUN set -eux; \
+    echo '=== Final dependency versions ==='; \
+    python3 -m pip show \
+        paddlepaddle-gpu \
+        paddleocr \
+        paddlex \
+        anyio \
+        msgpack \
+        protobuf \
+        setuptools \
+        requests \
+        Pillow \
+        PyMuPDF; \
+    echo '=== Final installed package list ==='; \
+    python3 -m pip list --format=columns; \
+    echo '=== Final dependency consistency check ==='; \
+    python3 -m pip check
+
+# Print the importlib-resolved locations so duplicate or stale metadata can be
+# distinguished from the package version used by the final Python environment.
+RUN python3 - <<'PY'
+from importlib.metadata import distribution
+
+for name in ("msgpack", "setuptools"):
+    dist = distribution(name)
+    print(f"{name}: version={dist.version}")
+    print(f"{name}: location={dist.locate_file('')}")
+PY
+
+# List every relevant dist-info directory in the final image filesystem.
+RUN find /usr/local /usr/lib /opt \
+    \( -type d -name 'msgpack*.dist-info' \
+    -o -type d -name 'setuptools*.dist-info' \) \
+    -print
+
 COPY . /app/
 
 RUN mkdir -p \

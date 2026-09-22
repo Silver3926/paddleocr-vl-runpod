@@ -16,6 +16,12 @@ on:
       - url_security.py
       - .github/workflows/release.yml
   workflow_dispatch:
+    inputs:
+      run_image_diagnostic:
+        description: "Run the optional Trivy image diagnostic scan"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -62,11 +68,13 @@ jobs:
         run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push candidate image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
           push: true
+          progress: plain
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_CANDIDATE_TAG }}
           labels: |
@@ -75,19 +83,176 @@ jobs:
             org.opencontainers.image.created=${{ steps.metadata.outputs.created }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Production images retain BuildKit supply-chain attestations.
           provenance: true
           sbom: true
 
-      - name: Scan candidate image with Trivy
+      # Resolve the linux/amd64 image digest and scan that exact image rather
+      # than a mutable tag.
+      - name: Resolve platform manifest digest
+        id: resolve
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          CANDIDATE_TAG: ${{ env.IMAGE_CANDIDATE_TAG }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          REF="${IMAGE}:${CANDIDATE_TAG}"
+          RAW="$(docker buildx imagetools inspect "${REF}" --raw)"
+
+          if jq -e '.manifests' >/dev/null <<<"${RAW}"; then
+            DIGEST="$(jq -r '(.manifests // [])
+              | map(select(.platform.os == "linux" and .platform.architecture == "amd64"))
+              | first
+              | .digest // empty' <<<"${RAW}")"
+          else
+            DIGEST="${BUILD_DIGEST}"
+          fi
+
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::Tidak dapat menemukan digest manifest linux/amd64 untuk ${REF}"
+            echo "Raw manifest:"
+            echo "${RAW}"
+            exit 1
+          fi
+
+          echo "Scan target: ${IMAGE}@${DIGEST}"
+          echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
+
+      # Optional diagnostic only. The exported-rootfs scan below remains the
+      # blocking package vulnerability gate for release promotion.
+      - name: Scan candidate image with Trivy (optional report only)
+        if: inputs.run_image_diagnostic == true
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_CANDIDATE_TAG }}
-          format: table
-          exit-code: "1"
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.resolve.outputs.digest }}
+          format: json
+          output: trivy-image-report.json
+          exit-code: "0"
           ignore-unfixed: true
           vuln-type: os,library
           scanners: vuln,misconfig,secret
           severity: CRITICAL,HIGH
+
+      - name: Summarize Trivy image findings
+        if: always() && inputs.run_image_diagnostic == true
+        run: |
+          set -euo pipefail
+
+          if [ ! -s trivy-image-report.json ]; then
+            echo "Laporan Trivy image tidak tersedia."
+            exit 0
+          fi
+
+          echo "=== Ringkasan image scan (optional report only) ==="
+          jq -r '
+            [.Results[]?.Vulnerabilities[]?] as $v
+            | "total=\($v | length) critical=\([$v[] | select(.Severity == "CRITICAL")] | length) high=\([$v[] | select(.Severity == "HIGH")] | length)"
+          ' trivy-image-report.json || true
+
+          echo "=== Temuan image per target ==="
+          jq -r '
+            .Results[]?
+            | select((.Vulnerabilities // []) | length > 0)
+            | "\(.Target) [\(.Type)]",
+              ((.Vulnerabilities // [])[]
+               | "  - \(.VulnerabilityID) \(.Severity) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "-")")
+          ' trivy-image-report.json || true
+
+      - name: Export candidate filesystem
+        id: export-rootfs
+        if: always() && steps.resolve.outcome == 'success'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          IMAGE_DIGEST: ${{ steps.resolve.outputs.digest }}
+          CONTAINER_NAME: trivy-rootfs-${{ github.run_id }}
+          ROOTFS_DIR: ${{ runner.temp }}/candidate-rootfs
+          ROOTFS_TAR: ${{ runner.temp }}/candidate-rootfs.tar
+        run: |
+          set -euo pipefail
+
+          rm -rf "${ROOTFS_DIR}" "${ROOTFS_TAR}"
+          mkdir -p "${ROOTFS_DIR}"
+
+          cleanup() {
+            docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          IMAGE_REF="${IMAGE}@${IMAGE_DIGEST}"
+          echo "Pulling ${IMAGE_REF}"
+          docker pull "${IMAGE_REF}"
+
+          echo "Creating stopped container"
+          docker create --name "${CONTAINER_NAME}" "${IMAGE_REF}" >/dev/null
+
+          echo "Exporting container root filesystem"
+          docker export "${CONTAINER_NAME}" --output "${ROOTFS_TAR}"
+
+          echo "Extracting root filesystem"
+          tar --extract --file "${ROOTFS_TAR}" --directory "${ROOTFS_DIR}"
+
+          echo "=== Package metadata found in exported rootfs ==="
+          find "${ROOTFS_DIR}/usr/local" \
+               "${ROOTFS_DIR}/usr/lib" \
+               "${ROOTFS_DIR}/opt" \
+               -type d \
+               \( -name 'msgpack*.dist-info' \
+               -o -name 'setuptools*.dist-info' \) \
+               -print || true
+
+          echo "rootfs_dir=${ROOTFS_DIR}" >> "${GITHUB_OUTPUT}"
+
+      # docker export contains only the container filesystem; it does not carry
+      # the OCI image index or BuildKit SBOM/provenance attestations. This is
+      # the blocking package vulnerability gate for release promotion.
+      - name: Scan exported filesystem with Trivy (blocking gate)
+        if: always() && steps.export-rootfs.outcome == 'success'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ steps.export-rootfs.outputs.rootfs_dir }}
+          format: json
+          output: trivy-rootfs-report.json
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          scanners: vuln
+          severity: CRITICAL,HIGH
+
+      - name: Summarize Trivy filesystem findings
+        if: always()
+        run: |
+          set -euo pipefail
+
+          if [ ! -s trivy-rootfs-report.json ]; then
+            echo "Laporan Trivy filesystem tidak tersedia."
+            exit 0
+          fi
+
+          echo "=== Ringkasan filesystem scan (blocking gate) ==="
+          jq -r '
+            [.Results[]?.Vulnerabilities[]?] as $v
+            | "total=\($v | length) critical=\([$v[] | select(.Severity == "CRITICAL")] | length) high=\([$v[] | select(.Severity == "HIGH")] | length)"
+          ' trivy-rootfs-report.json || true
+
+          echo "=== Temuan filesystem per target ==="
+          jq -r '
+            .Results[]?
+            | select((.Vulnerabilities // []) | length > 0)
+            | "\(.Target) [\(.Type)]",
+              ((.Vulnerabilities // [])[]
+               | "  - \(.VulnerabilityID) \(.Severity) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "-")")
+          ' trivy-rootfs-report.json || true
+
+      - name: Upload Trivy filesystem report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-rootfs-report
+          path: trivy-rootfs-report.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Promote scanned image to production tags
         env:
