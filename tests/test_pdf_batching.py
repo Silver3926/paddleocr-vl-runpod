@@ -143,6 +143,45 @@ def test_split_pdf_batch_uses_one_based_inclusive_range(tmp_path):
         original.close()
 
 
+def test_split_pdf_batch_reuses_open_source_document(tmp_path):
+    source = tmp_path / "source.pdf"
+    first_destination = tmp_path / "first.pdf"
+    second_destination = tmp_path / "second.pdf"
+    create_test_pdf(source, page_count=4)
+
+    source_document = fitz.open(source)
+    try:
+        split_pdf_batch(
+            source_pdf=source_document,
+            destination_pdf=first_destination,
+            batch=PdfBatch("batch-0001", 1, 2),
+        )
+        split_pdf_batch(
+            source_pdf=source_document,
+            destination_pdf=second_destination,
+            batch=PdfBatch("batch-0002", 3, 4),
+        )
+
+        assert source_document.page_count == 4
+    finally:
+        source_document.close()
+
+    first = fitz.open(first_destination)
+    second = fitz.open(second_destination)
+    try:
+        assert [page.get_text().strip() for page in first] == [
+            "Page 1",
+            "Page 2",
+        ]
+        assert [page.get_text().strip() for page in second] == [
+            "Page 3",
+            "Page 4",
+        ]
+    finally:
+        first.close()
+        second.close()
+
+
 def test_split_pdf_batch_preserves_page_order_for_last_batch(tmp_path):
     source = tmp_path / "source.pdf"
     destination = tmp_path / "last-batch.pdf"
