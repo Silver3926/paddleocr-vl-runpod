@@ -8,6 +8,7 @@ import fitz
 import runpod
 from paddleocr import PaddleOCRVL
 
+from batch_execution import execute_batch_with_retry
 from config import (
     CONCATENATE_PAGES,
     DEVICE,
@@ -29,7 +30,6 @@ from pdf_processor import (
     cleanup_job_directory,
     create_job_directory,
     download_file,
-    split_pdf_batch,
     validate_input_file,
 )
 
@@ -137,7 +137,7 @@ def process_pdf(
     pipeline_instance: Any,
     batch_options: PdfBatchOptions,
 ) -> tuple[str, list[Any], int, int, int, int]:
-    """Process selected PDF pages sequentially and merge their results."""
+    """Process selected PDF pages sequentially with per-batch retry."""
 
     total_pages = validate_input_file(pdf_path, "pdf")
     page_start, page_end = resolve_page_range(
@@ -155,42 +155,16 @@ def process_pdf(
     page_numbers: list[int] = []
     source_document = fitz.open(str(pdf_path))
     try:
-        for batch_index, batch in enumerate(batches, start=1):
+        for batch in batches:
             batch_path = pdf_path.parent / f"{batch.batch_id}.pdf"
-            try:
-                split_pdf_batch(
-                    source_pdf=source_document,
-                    destination_pdf=batch_path,
-                    batch=batch,
-                )
-                logger.info(
-                    "Processing %s: pages %s-%s (%s/%s)",
-                    batch.batch_id,
-                    batch.page_start,
-                    batch.page_end,
-                    batch_index,
-                    len(batches),
-                )
-
-                batch_pages = list(
-                    pipeline_instance.predict(input=str(batch_path))
-                )
-                if not batch_pages:
-                    raise ValueError(
-                        f"PaddleOCR-VL returned no results for {batch.batch_id}."
-                    )
-                if len(batch_pages) != batch.page_count:
-                    raise ValueError(
-                        f"PaddleOCR-VL returned {len(batch_pages)} results for "
-                        f"{batch.batch_id}, expected {batch.page_count}."
-                    )
-
-                pages.extend(batch_pages)
-                page_numbers.extend(
-                    range(batch.page_start, batch.page_end + 1)
-                )
-            finally:
-                batch_path.unlink(missing_ok=True)
+            batch_pages, _status = execute_batch_with_retry(
+                pipeline_instance=pipeline_instance,
+                source_document=source_document,
+                batch=batch,
+                batch_path=batch_path,
+            )
+            pages.extend(batch_pages)
+            page_numbers.extend(range(batch.page_start, batch.page_end + 1))
     finally:
         source_document.close()
 
