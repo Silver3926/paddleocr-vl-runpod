@@ -1,8 +1,11 @@
+import fitz
 import importlib
 import sys
 import types
 
 import pytest
+
+from pdf_batching import PdfBatchOptions
 
 
 @pytest.fixture
@@ -80,3 +83,42 @@ def test_response_size_limit(handler_module, monkeypatch):
             "success": True,
             "markdown": "x" * 100,
         })
+
+
+def test_process_pdf_runs_batches_sequentially(handler_module, tmp_path):
+    source = tmp_path / "source.pdf"
+    document = fitz.open()
+    for index in range(6):
+        page = document.new_page()
+        page.insert_text((72, 72), f"Page {index + 1}")
+    document.save(source)
+    document.close()
+
+    class BatchPipeline:
+        def __init__(self):
+            self.inputs = []
+
+        def predict(self, input):
+            self.inputs.append(input)
+            return [{"markdown": Path(input).stem}]
+
+        def restructure_pages(self, pages, **kwargs):
+            return pages
+
+    from pathlib import Path
+
+    fake_pipeline = BatchPipeline()
+    result = handler_module.process_pdf(
+        source,
+        fake_pipeline,
+        PdfBatchOptions(page_start=2, page_end=6, batch_size=2),
+    )
+
+    assert len(fake_pipeline.inputs) == 3
+    assert [Path(path).name for path in fake_pipeline.inputs] == [
+        "batch-0001.pdf",
+        "batch-0002.pdf",
+        "batch-0003.pdf",
+    ]
+    assert result[2:] == (6, 2, 6, 3)
+    assert list(tmp_path.glob("batch-*.pdf")) == []
