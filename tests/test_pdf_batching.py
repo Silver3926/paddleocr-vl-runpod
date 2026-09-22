@@ -92,6 +92,29 @@ def test_build_batches_non_one_start():
     ]
 
 
+def test_build_batches_are_contiguous_and_cover_range():
+    batches = build_pdf_batches(4, 17, batch_size=4)
+
+    covered_pages = [
+        page
+        for batch in batches
+        for page in range(batch.page_start, batch.page_end + 1)
+    ]
+
+    assert covered_pages == list(range(4, 18))
+    assert len(covered_pages) == len(set(covered_pages))
+
+
+def test_build_batches_single_page_range():
+    batches = build_pdf_batches(7, 7, batch_size=5)
+
+    assert len(batches) == 1
+    assert batches[0].batch_id == "batch-0001"
+    assert batches[0].page_start == 7
+    assert batches[0].page_end == 7
+    assert batches[0].page_count == 1
+
+
 def test_split_pdf_batch_uses_one_based_inclusive_range(tmp_path):
     source = tmp_path / "source.pdf"
     destination = tmp_path / "batch.pdf"
@@ -104,10 +127,37 @@ def test_split_pdf_batch_uses_one_based_inclusive_range(tmp_path):
     )
 
     result = fitz.open(destination)
+    original = fitz.open(source)
     try:
         assert len(result) == 3
-        assert "Page 2" in result[0].get_text()
-        assert "Page 4" in result[2].get_text()
+        assert [page.get_text().strip() for page in result] == [
+            "Page 2",
+            "Page 3",
+            "Page 4",
+        ]
+        assert len(original) == 5
+        assert "Page 1" in original[0].get_text()
+        assert "Page 5" in original[4].get_text()
+    finally:
+        result.close()
+        original.close()
+
+
+def test_split_pdf_batch_preserves_page_order_for_last_batch(tmp_path):
+    source = tmp_path / "source.pdf"
+    destination = tmp_path / "last-batch.pdf"
+    create_test_pdf(source, page_count=7)
+
+    split_pdf_batch(
+        source_pdf=source,
+        destination_pdf=destination,
+        batch=PdfBatch("batch-0003", 7, 7),
+    )
+
+    result = fitz.open(destination)
+    try:
+        assert len(result) == 1
+        assert result[0].get_text().strip() == "Page 7"
     finally:
         result.close()
 
