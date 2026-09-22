@@ -2,6 +2,7 @@ import fitz
 import importlib
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -85,7 +86,10 @@ def test_response_size_limit(handler_module, monkeypatch):
         })
 
 
-def test_process_pdf_runs_batches_sequentially(handler_module, tmp_path):
+def test_process_pdf_runs_batches_sequentially_and_preserves_pages(
+    handler_module,
+    tmp_path,
+):
     source = tmp_path / "source.pdf"
     document = fitz.open()
     for index in range(6):
@@ -105,8 +109,6 @@ def test_process_pdf_runs_batches_sequentially(handler_module, tmp_path):
         def restructure_pages(self, pages, **kwargs):
             return pages
 
-    from pathlib import Path
-
     fake_pipeline = BatchPipeline()
     result = handler_module.process_pdf(
         source,
@@ -121,4 +123,25 @@ def test_process_pdf_runs_batches_sequentially(handler_module, tmp_path):
         "batch-0003.pdf",
     ]
     assert result[2:] == (6, 2, 6, 3)
+    assert "<!-- Page 2 -->" in result[0]
+    assert "<!-- Page 6 -->" in result[0]
+    assert [item["page_numbers"] for item in result[1]] == [
+        [2],
+        [3],
+        [4],
+        [5],
+        [6],
+    ]
     assert list(tmp_path.glob("batch-*.pdf")) == []
+
+
+def test_process_results_preserves_all_pages_for_single_restructured_result(
+    handler_module,
+):
+    markdown, results = handler_module.process_results(
+        [{"markdown": "combined"}],
+        page_numbers=[[4, 5, 6]],
+    )
+
+    assert "<!-- Pages 4-6 -->" in markdown
+    assert results[0]["page_numbers"] == [4, 5, 6]
