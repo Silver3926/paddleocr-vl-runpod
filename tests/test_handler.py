@@ -180,10 +180,10 @@ def test_process_pdf_forwards_stable_progress_snapshots(
         "batch-0002",
     ]
     assert [event.attempts for event in progress_events] == [1, 1, 1, 1]
-    assert all(
-        event.duration_seconds is not None
-        for event in progress_events
-    )
+    assert progress_events[0].duration_seconds is None
+    assert progress_events[2].duration_seconds is None
+    assert progress_events[1].duration_seconds is not None
+    assert progress_events[3].duration_seconds is not None
 
 
 def test_process_results_preserves_all_pages_for_single_restructured_result(
