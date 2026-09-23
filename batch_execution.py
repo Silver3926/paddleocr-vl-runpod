@@ -5,11 +5,9 @@ from typing import Any, Callable
 
 from batch_retry import (
     MAX_BATCH_RETRIES,
-    BatchErrorClass,
     BatchExecutionStatus,
     BatchProcessingError,
     BatchStatus,
-    BatchTransientError,
     calculate_backoff,
     classify_batch_error,
     is_retryable,
@@ -51,7 +49,7 @@ def execute_batch_once(
         pipeline_instance.predict(input=str(batch_path))
     )
     if not results:
-        raise BatchTransientError(
+        raise BatchProcessingError(
             f"PaddleOCR-VL returned no results for {batch.batch_id}."
         )
     if len(results) != batch.page_count:
@@ -87,6 +85,7 @@ def execute_batch_with_retry(
     for attempt in range(1, total_attempts + 1):
         status.attempts = attempt
         status.status = BatchStatus.PROCESSING
+        retry_delay = None
 
         try:
             results = execute_batch_once(
@@ -133,7 +132,7 @@ def execute_batch_with_retry(
                 ) from error
 
             status.status = BatchStatus.RETRYING
-            delay = calculate_backoff(attempt)
+            retry_delay = calculate_backoff(attempt)
             logger.warning(
                 "batch_status=retrying batch_id=%s attempt=%s/%s "
                 "error_class=%s backoff_seconds=%s",
@@ -141,12 +140,17 @@ def execute_batch_with_retry(
                 attempt,
                 total_attempts,
                 error_class,
-                delay,
+                retry_delay,
             )
-            sleep(delay)
 
         finally:
+            # Remove the attempt output before sleeping or retrying. This
+            # prevents stale batch artifacts from remaining on disk during
+            # the backoff interval and ensures every attempt is isolated.
             batch_path.unlink(missing_ok=True)
+
+        if retry_delay is not None:
+            sleep(retry_delay)
 
     raise AssertionError("Batch retry loop exited unexpectedly.")
 
