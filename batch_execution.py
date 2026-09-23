@@ -8,6 +8,7 @@ from batch_retry import (
     BatchExecutionStatus,
     BatchProcessingError,
     BatchStatus,
+    BatchTransientError,
     calculate_backoff,
     classify_batch_error,
     is_retryable,
@@ -49,7 +50,7 @@ def execute_batch_once(
         pipeline_instance.predict(input=str(batch_path))
     )
     if not results:
-        raise BatchProcessingError(
+        raise BatchTransientError(
             f"PaddleOCR-VL returned no results for {batch.batch_id}."
         )
     if len(results) != batch.page_count:
