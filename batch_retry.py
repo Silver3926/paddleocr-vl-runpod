@@ -17,6 +17,7 @@ class BatchStatus(StrEnum):
     RETRYING = "retrying"
     COMPLETED = "completed"
     FAILED = "failed"
+    TIMED_OUT = "timed_out"
 
 
 class BatchErrorClass(StrEnum):
@@ -24,6 +25,7 @@ class BatchErrorClass(StrEnum):
 
     TRANSIENT = "transient"
     PERMANENT = "permanent"
+    TIMEOUT = "timeout"
     UNKNOWN = "unknown"
 
 
@@ -39,6 +41,10 @@ class BatchPermanentError(BatchProcessingError):
     """An error that should not be retried."""
 
 
+class BatchTimeoutError(BatchProcessingError):
+    """Raised when a batch exceeds its configured duration."""
+
+
 @dataclass
 class BatchExecutionStatus:
     """In-memory status for one batch execution."""
@@ -50,6 +56,7 @@ class BatchExecutionStatus:
     attempts: int = 0
     error_class: BatchErrorClass | None = None
     error_message: str | None = None
+    duration_seconds: float | None = None
 
     @property
     def page_count(self) -> int:
@@ -59,6 +66,8 @@ class BatchExecutionStatus:
 def classify_batch_error(error: Exception) -> BatchErrorClass:
     """Classify an exception before deciding whether to retry it."""
 
+    if isinstance(error, BatchTimeoutError):
+        return BatchErrorClass.TIMEOUT
     if isinstance(error, BatchPermanentError):
         return BatchErrorClass.PERMANENT
     if isinstance(error, BatchTransientError):
@@ -73,7 +82,10 @@ def classify_batch_error(error: Exception) -> BatchErrorClass:
 def is_retryable(error_class: BatchErrorClass) -> bool:
     """Return whether the classification is eligible for retry."""
 
-    return error_class is BatchErrorClass.TRANSIENT
+    return error_class in {
+        BatchErrorClass.TRANSIENT,
+        BatchErrorClass.TIMEOUT,
+    }
 
 
 def calculate_backoff(
@@ -114,6 +126,7 @@ __all__ = [
     "BatchPermanentError",
     "BatchProcessingError",
     "BatchStatus",
+    "BatchTimeoutError",
     "BatchTransientError",
     "MAX_BATCH_RETRIES",
     "calculate_backoff",
