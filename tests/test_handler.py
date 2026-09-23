@@ -1,8 +1,12 @@
+import fitz
 import importlib
 import sys
 import types
+from pathlib import Path
 
 import pytest
+
+from pdf_batching import PdfBatchOptions
 
 
 @pytest.fixture
@@ -80,3 +84,74 @@ def test_response_size_limit(handler_module, monkeypatch):
             "success": True,
             "markdown": "x" * 100,
         })
+
+
+def test_process_pdf_runs_batches_sequentially_and_preserves_pages(
+    handler_module,
+    tmp_path,
+):
+    source = tmp_path / "source.pdf"
+    document = fitz.open()
+    for index in range(6):
+        page = document.new_page()
+        page.insert_text((72, 72), f"Page {index + 1}")
+    document.save(source)
+    document.close()
+
+    class BatchPipeline:
+        def __init__(self):
+            self.inputs = []
+            self.batch_page_counts = []
+
+        def predict(self, input):
+            self.inputs.append(input)
+            batch_document = fitz.open(input)
+            try:
+                self.batch_page_counts.append(batch_document.page_count)
+                return [
+                    {"markdown": f"page {index + 1}"}
+                    for index in range(batch_document.page_count)
+                ]
+            finally:
+                batch_document.close()
+
+        def restructure_pages(self, pages, **kwargs):
+            return pages
+
+    fake_pipeline = BatchPipeline()
+    result = handler_module.process_pdf(
+        source,
+        fake_pipeline,
+        PdfBatchOptions(page_start=2, page_end=6, batch_size=2),
+    )
+
+    assert len(fake_pipeline.inputs) == 3
+    assert [Path(path).name for path in fake_pipeline.inputs] == [
+        "batch-0001.pdf",
+        "batch-0002.pdf",
+        "batch-0003.pdf",
+    ]
+    assert fake_pipeline.batch_page_counts == [2, 2, 1]
+    assert result[2:] == (6, 2, 6, 3)
+    assert "<!-- Page 2 -->" in result[0]
+    assert "<!-- Page 6 -->" in result[0]
+    assert [item["page_numbers"] for item in result[1]] == [
+        [2],
+        [3],
+        [4],
+        [5],
+        [6],
+    ]
+    assert list(tmp_path.glob("batch-*.pdf")) == []
+
+
+def test_process_results_preserves_all_pages_for_single_restructured_result(
+    handler_module,
+):
+    markdown, results = handler_module.process_results(
+        [{"markdown": "combined"}],
+        page_numbers=[[4, 5, 6]],
+    )
+
+    assert "<!-- Pages 4-6 -->" in markdown
+    assert results[0]["page_numbers"] == [4, 5, 6]
