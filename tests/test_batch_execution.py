@@ -11,6 +11,7 @@ from batch_execution import (
 from batch_retry import (
     BatchPermanentError,
     BatchStatus,
+    BatchTimeoutError,
     BatchTransientError,
 )
 from pdf_batching import PdfBatch
@@ -67,6 +68,7 @@ def test_execute_batch_retries_transient_error(monkeypatch, tmp_path):
         batch_path=tmp_path / "batch-0001.pdf",
         max_retries=2,
         sleep=sleeps.append,
+        clock=lambda: 0.0,
     )
 
     assert results == ["page-1"]
@@ -75,6 +77,7 @@ def test_execute_batch_retries_transient_error(monkeypatch, tmp_path):
     assert status.status is BatchStatus.COMPLETED
     assert status.attempts == 2
     assert status.error_class is None
+    assert status.duration_seconds == 0.0
     assert list(tmp_path.iterdir()) == []
 
 
@@ -95,6 +98,7 @@ def test_execute_batch_does_not_retry_permanent_error(
             batch_path=tmp_path / "batch-0001.pdf",
             max_retries=2,
             sleep=sleeps.append,
+            clock=lambda: 0.0,
         )
 
     assert pipeline.calls == 1
@@ -125,6 +129,7 @@ def test_execute_batch_stops_after_retry_budget(
             batch_path=tmp_path / "batch-0001.pdf",
             max_retries=2,
             sleep=sleeps.append,
+            clock=lambda: 0.0,
         )
 
     assert pipeline.calls == 3
@@ -150,8 +155,65 @@ def test_execute_batch_rejects_wrong_result_count(
             batch_path=tmp_path / "batch-0001.pdf",
             max_retries=2,
             sleep=lambda _: None,
+            clock=lambda: 0.0,
         )
 
     assert pipeline.calls == 1
     assert caught.value.status.attempts == 1
     assert caught.value.status.error_message is not None
+
+
+def test_execute_batch_marks_soft_timeout_and_cleans_artifact(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(batch_execution, "split_pdf_batch", fake_split)
+    pipeline = FakePipeline([["page-1"]])
+    clock_values = iter([0.0, 6.0])
+    batch = PdfBatch("batch-0001", 1, 1)
+
+    with pytest.raises(BatchExecutionFailure) as caught:
+        execute_batch_with_retry(
+            pipeline_instance=pipeline,
+            source_document=object(),
+            batch=batch,
+            batch_path=tmp_path / "batch-0001.pdf",
+            max_retries=0,
+            max_duration_seconds=5,
+            sleep=lambda _: None,
+            clock=lambda: next(clock_values),
+        )
+
+    assert isinstance(caught.value.__cause__, BatchTimeoutError)
+    assert caught.value.status.status is BatchStatus.TIMED_OUT
+    assert caught.value.status.attempts == 1
+    assert caught.value.status.duration_seconds == 6.0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_execute_batch_emits_progress_transitions(monkeypatch, tmp_path):
+    monkeypatch.setattr(batch_execution, "split_pdf_batch", fake_split)
+    pipeline = FakePipeline([
+        BatchTransientError("temporary failure"),
+        ["page-1"],
+    ])
+    transitions = []
+    batch = PdfBatch("batch-0001", 1, 1)
+
+    execute_batch_with_retry(
+        pipeline_instance=pipeline,
+        source_document=object(),
+        batch=batch,
+        batch_path=tmp_path / "batch-0001.pdf",
+        max_retries=1,
+        sleep=lambda _: None,
+        clock=lambda: 0.0,
+        progress=lambda status: transitions.append(status.status),
+    )
+
+    assert transitions == [
+        BatchStatus.PROCESSING,
+        BatchStatus.RETRYING,
+        BatchStatus.PROCESSING,
+        BatchStatus.COMPLETED,
+    ]
