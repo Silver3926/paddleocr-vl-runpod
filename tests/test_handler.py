@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from batch_retry import BatchStatus
 from pdf_batching import PdfBatchOptions
 
 
@@ -86,39 +87,44 @@ def test_response_size_limit(handler_module, monkeypatch):
         })
 
 
+def make_test_pdf(path, page_count):
+    document = fitz.open()
+    for index in range(page_count):
+        page = document.new_page()
+        page.insert_text((72, 72), f"Page {index + 1}")
+    document.save(path)
+    document.close()
+
+
+class BatchPipeline:
+    def __init__(self):
+        self.inputs = []
+        self.batch_page_counts = []
+
+    def predict(self, input):
+        self.inputs.append(input)
+        batch_document = fitz.open(input)
+        try:
+            self.batch_page_counts.append(batch_document.page_count)
+            return [
+                {"markdown": f"page {index + 1}"}
+                for index in range(batch_document.page_count)
+            ]
+        finally:
+            batch_document.close()
+
+    def restructure_pages(self, pages, **kwargs):
+        return pages
+
+
 def test_process_pdf_runs_batches_sequentially_and_preserves_pages(
     handler_module,
     tmp_path,
 ):
     source = tmp_path / "source.pdf"
-    document = fitz.open()
-    for index in range(6):
-        page = document.new_page()
-        page.insert_text((72, 72), f"Page {index + 1}")
-    document.save(source)
-    document.close()
-
-    class BatchPipeline:
-        def __init__(self):
-            self.inputs = []
-            self.batch_page_counts = []
-
-        def predict(self, input):
-            self.inputs.append(input)
-            batch_document = fitz.open(input)
-            try:
-                self.batch_page_counts.append(batch_document.page_count)
-                return [
-                    {"markdown": f"page {index + 1}"}
-                    for index in range(batch_document.page_count)
-                ]
-            finally:
-                batch_document.close()
-
-        def restructure_pages(self, pages, **kwargs):
-            return pages
-
+    make_test_pdf(source, page_count=6)
     fake_pipeline = BatchPipeline()
+
     result = handler_module.process_pdf(
         source,
         fake_pipeline,
@@ -143,6 +149,41 @@ def test_process_pdf_runs_batches_sequentially_and_preserves_pages(
         [6],
     ]
     assert list(tmp_path.glob("batch-*.pdf")) == []
+
+
+def test_process_pdf_forwards_stable_progress_snapshots(
+    handler_module,
+    tmp_path,
+):
+    source = tmp_path / "source.pdf"
+    make_test_pdf(source, page_count=2)
+    fake_pipeline = BatchPipeline()
+    progress_events = []
+
+    handler_module.process_pdf(
+        source,
+        fake_pipeline,
+        PdfBatchOptions(page_start=1, page_end=2, batch_size=1),
+        progress=progress_events.append,
+    )
+
+    assert [event.status for event in progress_events] == [
+        BatchStatus.PROCESSING,
+        BatchStatus.COMPLETED,
+        BatchStatus.PROCESSING,
+        BatchStatus.COMPLETED,
+    ]
+    assert [event.batch_id for event in progress_events] == [
+        "batch-0001",
+        "batch-0001",
+        "batch-0002",
+        "batch-0002",
+    ]
+    assert [event.attempts for event in progress_events] == [1, 1, 1, 1]
+    assert progress_events[0].duration_seconds is None
+    assert progress_events[2].duration_seconds is None
+    assert progress_events[1].duration_seconds is not None
+    assert progress_events[3].duration_seconds is not None
 
 
 def test_process_results_preserves_all_pages_for_single_restructured_result(

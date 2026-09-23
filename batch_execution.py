@@ -1,5 +1,6 @@
 import logging
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -78,7 +79,7 @@ def _emit_progress(
         status.duration_seconds,
     )
     if progress is not None:
-        progress(status)
+        progress(replace(status))
 
 
 def execute_batch_with_retry(
@@ -201,6 +202,7 @@ def execute_batch_with_retry(
 
 __all__ = [
     "BatchExecutionFailure",
+    "ProgressCallback",
     "execute_batch_once",
     "execute_batch_with_retry",
 ]
