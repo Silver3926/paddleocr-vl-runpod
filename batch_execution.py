@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from batch_retry import (
     MAX_BATCH_RETRIES,
+    BatchErrorClass,
     BatchExecutionStatus,
     BatchProcessingError,
     BatchStatus,
@@ -95,8 +96,7 @@ def execute_batch_with_retry(
 
     ``max_retries`` counts retries after the initial attempt. The duration
     limit is a soft timeout: inference is allowed to return, then the result
-    is rejected if the measured attempt duration exceeds the limit. A hard
-    kill of a native CUDA inference is intentionally not attempted here.
+    is rejected if the measured attempt duration exceeds the limit.
     """
 
     if isinstance(max_retries, bool) or not isinstance(max_retries, int):
@@ -119,6 +119,7 @@ def execute_batch_with_retry(
         status.status = BatchStatus.PROCESSING
         status.error_class = None
         status.error_message = None
+        status.duration_seconds = None
         retry_delay = None
         started = clock()
         _emit_progress(status, progress)
@@ -130,8 +131,9 @@ def execute_batch_with_retry(
                 batch=batch,
                 batch_path=batch_path,
             )
-            status.duration_seconds = clock() - started
-            if status.duration_seconds > max_duration_seconds:
+            elapsed = clock() - started
+            status.duration_seconds = elapsed
+            if elapsed > max_duration_seconds:
                 raise BatchTimeoutError(
                     f"Batch {batch.batch_id} exceeded maximum duration "
                     f"of {max_duration_seconds} seconds."
@@ -142,7 +144,8 @@ def execute_batch_with_retry(
             return results, status
 
         except Exception as error:
-            status.duration_seconds = clock() - started
+            if status.duration_seconds is None:
+                status.duration_seconds = clock() - started
             error_class = classify_batch_error(error)
             status.error_class = error_class
             status.error_message = str(error)
@@ -154,7 +157,7 @@ def execute_batch_with_retry(
             if not can_retry:
                 status.status = (
                     BatchStatus.TIMED_OUT
-                    if error_class.name == "TIMEOUT"
+                    if error_class is BatchErrorClass.TIMEOUT
                     else BatchStatus.FAILED
                 )
                 _emit_progress(status, progress)
