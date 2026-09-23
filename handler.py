@@ -2,7 +2,7 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import fitz
 import runpod
