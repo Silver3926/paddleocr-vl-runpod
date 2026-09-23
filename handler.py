@@ -2,13 +2,16 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import fitz
 import runpod
 from paddleocr import PaddleOCRVL
 
-from batch_execution import execute_batch_with_retry
+from batch_execution import (
+    ProgressCallback,
+    execute_batch_with_retry,
+)
 from batch_retry import BatchStatus
 from config import (
     CONCATENATE_PAGES,
@@ -137,6 +140,7 @@ def process_pdf(
     pdf_path: Path,
     pipeline_instance: Any,
     batch_options: PdfBatchOptions,
+    progress: ProgressCallback | None = None,
 ) -> tuple[str, list[Any], int, int, int, int]:
     """Process selected PDF pages sequentially with retry and progress logs."""
 
@@ -155,15 +159,17 @@ def process_pdf(
     pages = []
     page_numbers: list[int] = []
     completed_batches = 0
+    batch_statuses = []
 
     def report_progress(status) -> None:
         nonlocal completed_batches
+        batch_statuses.append(status)
+        if progress is not None:
+            progress(status)
         if status.status is not BatchStatus.COMPLETED:
             return
         completed_batches += 1
-        progress_percent = int(
-            completed_batches / len(batches) * 100
-        )
+        progress_percent = int(completed_batches / len(batches) * 100)
         logger.info(
             "batch_progress completed_batches=%s total_batches=%s "
             "progress_percent=%s last_batch_id=%s",
@@ -177,7 +183,7 @@ def process_pdf(
     try:
         for batch in batches:
             batch_path = pdf_path.parent / f"{batch.batch_id}.pdf"
-            batch_pages, _status = execute_batch_with_retry(
+            batch_pages, status = execute_batch_with_retry(
                 pipeline_instance=pipeline_instance,
                 source_document=source_document,
                 batch=batch,
@@ -186,6 +192,12 @@ def process_pdf(
             )
             pages.extend(batch_pages)
             page_numbers.extend(range(batch.page_start, batch.page_end + 1))
+            logger.debug(
+                "batch_result batch_id=%s status=%s attempts=%s",
+                status.batch_id,
+                status.status,
+                status.attempts,
+            )
     finally:
         source_document.close()
 
