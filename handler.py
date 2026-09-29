@@ -12,6 +12,7 @@ from batch_execution import (
     ProgressCallback,
     execute_batch_with_retry,
 )
+from batch_result_storage import upload_batch_results
 from batch_retry import BatchStatus
 from config import (
     CONCATENATE_PAGES,
@@ -22,8 +23,10 @@ from config import (
     PIPELINE_VERSION,
     RELEVEL_TITLES,
     RETURN_JSON,
+    STORAGE_ENABLED,
     TEMP_DIR,
 )
+from object_storage import ObjectStorage, create_s3_object_storage
 from pdf_batching import (
     PdfBatchOptions,
     build_pdf_batches,
@@ -141,8 +144,13 @@ def process_pdf(
     pipeline_instance: Any,
     batch_options: PdfBatchOptions,
     progress: ProgressCallback | None = None,
+    storage: ObjectStorage | None = None,
+    job_id: str | None = None,
 ) -> tuple[str, list[Any], int, int, int, int]:
-    """Process selected PDF pages sequentially with retry and progress logs."""
+    """Process PDF batches, optionally uploading each successful batch."""
+
+    if storage is not None and not job_id:
+        raise ValueError("job_id is required when batch result storage is enabled.")
 
     total_pages = validate_input_file(pdf_path, "pdf")
     page_start, page_end = resolve_page_range(
@@ -183,13 +191,50 @@ def process_pdf(
     try:
         for batch in batches:
             batch_path = pdf_path.parent / f"{batch.batch_id}.pdf"
+            deferred_completion = []
+
+            def on_batch_progress(status) -> None:
+                if storage is not None and status.status is BatchStatus.COMPLETED:
+                    deferred_completion.append(status)
+                else:
+                    report_progress(status)
+
             batch_pages, status = execute_batch_with_retry(
                 pipeline_instance=pipeline_instance,
                 source_document=source_document,
                 batch=batch,
                 batch_path=batch_path,
-                progress=report_progress,
+                progress=on_batch_progress,
             )
+
+            if storage is not None:
+                try:
+                    keys = upload_batch_results(
+                        storage=storage,
+                        job_id=job_id,
+                        batch=batch,
+                        results=batch_pages,
+                    )
+                    logger.info(
+                        "batch_result_storage batch_id=%s markdown_key=%s "
+                        "json_key=%s",
+                        batch.batch_id,
+                        keys.markdown_key,
+                        keys.json_key,
+                    )
+                except Exception as exc:
+                    status.status = BatchStatus.FAILED
+                    status.error_message = (
+                        f"Batch result upload failed: {exc}"
+                    )
+                    report_progress(status)
+                    raise
+
+                # The batch is considered complete for job progress after its
+                # OCR results have also been persisted successfully.
+                if deferred_completion:
+                    report_progress(deferred_completion[-1])
+
             pages.extend(batch_pages)
             page_numbers.extend(range(batch.page_start, batch.page_end + 1))
             logger.debug(
@@ -332,6 +377,7 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         else:
             pdf_path = job_dir / "input.pdf"
             download_file(pdf_url, pdf_path)
+            storage = create_s3_object_storage() if STORAGE_ENABLED else None
             (
                 markdown,
                 results,
@@ -339,7 +385,13 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
                 page_start,
                 page_end,
                 batch_count,
-            ) = process_pdf(pdf_path, pipeline, batch_options)
+            ) = process_pdf(
+                pdf_path,
+                pipeline,
+                batch_options,
+                storage=storage,
+                job_id=str(job_id),
+            )
             response = {
                 "success": True,
                 "type": "pdf",
