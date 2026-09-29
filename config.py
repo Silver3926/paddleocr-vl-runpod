@@ -2,6 +2,9 @@ import os
 import tempfile
 
 
+MAX_S3_PRESIGNED_URL_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
 def get_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -26,6 +29,39 @@ def get_int(name: str, default: int) -> int:
         raise ValueError(
             f"Environment variable {name} must be an integer."
         ) from exc
+
+
+def _optional_env(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _validate_storage_configuration() -> None:
+    if not (
+        1
+        <= STORAGE_PRESIGNED_URL_TTL_SECONDS
+        <= MAX_S3_PRESIGNED_URL_TTL_SECONDS
+    ):
+        raise ValueError(
+            "STORAGE_PRESIGNED_URL_TTL_SECONDS must be between 1 and "
+            f"{MAX_S3_PRESIGNED_URL_TTL_SECONDS} seconds."
+        )
+    if bool(STORAGE_ACCESS_KEY_ID) != bool(STORAGE_SECRET_ACCESS_KEY):
+        raise ValueError(
+            "STORAGE_ACCESS_KEY_ID and STORAGE_SECRET_ACCESS_KEY "
+            "must be configured together."
+        )
+    if STORAGE_ENABLED and not STORAGE_BUCKET:
+        raise ValueError(
+            "STORAGE_BUCKET is required when STORAGE_ENABLED is true."
+        )
+    if STORAGE_ENABLED and not STORAGE_REGION:
+        raise ValueError(
+            "STORAGE_REGION must be non-empty when storage is enabled."
+        )
 
 
 PIPELINE_VERSION = os.getenv("PADDLEOCR_PIPELINE_VERSION", "v1.6")
@@ -62,6 +98,17 @@ DOWNLOAD_READ_TIMEOUT_SECONDS = get_int(
     "DOWNLOAD_READ_TIMEOUT_SECONDS", 120
 )
 
+STORAGE_ENABLED = get_bool("STORAGE_ENABLED", False)
+STORAGE_ENDPOINT_URL = _optional_env("STORAGE_ENDPOINT_URL")
+STORAGE_REGION = os.getenv("STORAGE_REGION", "us-east-1").strip()
+STORAGE_BUCKET = _optional_env("STORAGE_BUCKET")
+STORAGE_ACCESS_KEY_ID = _optional_env("STORAGE_ACCESS_KEY_ID")
+STORAGE_SECRET_ACCESS_KEY = _optional_env("STORAGE_SECRET_ACCESS_KEY")
+STORAGE_PRESIGNED_URL_TTL_SECONDS = get_int(
+    "STORAGE_PRESIGNED_URL_TTL_SECONDS",
+    3600,
+)
+
 for name, value in {
     "MAX_PDF_PAGES": MAX_PDF_PAGES,
     "MAX_DOWNLOAD_SIZE_MB": MAX_DOWNLOAD_SIZE_MB,
@@ -88,6 +135,8 @@ if BATCH_RETRY_BACKOFF_SECONDS > MAX_BATCH_RETRY_BACKOFF_SECONDS:
         "BATCH_RETRY_BACKOFF_SECONDS cannot exceed "
         "MAX_BATCH_RETRY_BACKOFF_SECONDS."
     )
+
+_validate_storage_configuration()
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 RETURN_JSON = get_bool("RETURN_JSON", True)
