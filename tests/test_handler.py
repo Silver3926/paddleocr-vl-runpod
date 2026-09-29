@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from batch_retry import BatchStatus
+from object_storage import FakeObjectStorage
 from pdf_batching import PdfBatchOptions
 
 
@@ -184,6 +185,60 @@ def test_process_pdf_forwards_stable_progress_snapshots(
     assert progress_events[2].duration_seconds is None
     assert progress_events[1].duration_seconds is not None
     assert progress_events[3].duration_seconds is not None
+
+
+def test_process_pdf_uploads_each_batch_results_to_storage(
+    handler_module,
+    tmp_path,
+):
+    source = tmp_path / "source.pdf"
+    make_test_pdf(source, page_count=2)
+    fake_pipeline = BatchPipeline()
+    storage = FakeObjectStorage()
+    progress_events = []
+
+    handler_module.process_pdf(
+        source,
+        fake_pipeline,
+        PdfBatchOptions(page_start=1, page_end=2, batch_size=1),
+        progress=progress_events.append,
+        storage=storage,
+        job_id="job-abc",
+    )
+
+    expected_prefix = "jobs/job-abc/batches"
+    assert storage.object_exists(
+        f"{expected_prefix}/batch-0001/result.md"
+    )
+    assert storage.object_exists(
+        f"{expected_prefix}/batch-0001/result.json"
+    )
+    assert storage.object_exists(
+        f"{expected_prefix}/batch-0002/result.md"
+    )
+    assert storage.object_exists(
+        f"{expected_prefix}/batch-0002/result.json"
+    )
+    assert "<!-- Page 1 -->" in storage.download_bytes(
+        f"{expected_prefix}/batch-0001/result.md"
+    ).decode("utf-8")
+    assert progress_events[-1].status is BatchStatus.COMPLETED
+
+
+def test_process_pdf_requires_job_id_when_storage_is_provided(
+    handler_module,
+    tmp_path,
+):
+    source = tmp_path / "source.pdf"
+    make_test_pdf(source, page_count=1)
+
+    with pytest.raises(ValueError, match="job_id is required"):
+        handler_module.process_pdf(
+            source,
+            BatchPipeline(),
+            PdfBatchOptions(page_start=1, page_end=1, batch_size=1),
+            storage=FakeObjectStorage(),
+        )
 
 
 def test_process_results_preserves_all_pages_for_single_restructured_result(
