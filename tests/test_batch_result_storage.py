@@ -37,6 +37,12 @@ class FlakyStorage(FakeObjectStorage):
         super().upload_bytes(key, data, content_type)
 
 
+class OcrResult:
+    def __init__(self, markdown, structured_json):
+        self.markdown = markdown
+        self.json = structured_json
+
+
 def test_batch_result_keys_follow_job_batch_layout():
     keys = batch_result_keys("job-123", "batch-0002")
 
@@ -56,8 +62,8 @@ def test_serialize_batch_results_keeps_page_numbers_and_utf8():
     batch = PdfBatch("batch-0001", 4, 5)
     markdown_bytes, json_bytes = serialize_batch_results(
         [
-            {"markdown": "Résumé page 4", "json": {"text": "résumé"}},
-            {"markdown": "Page 5", "json": {"text": "second"}},
+            OcrResult("Résumé page 4", {"text": "résumé"}),
+            OcrResult("Page 5", {"text": "second"}),
         ],
         batch,
     )
@@ -97,7 +103,13 @@ def test_upload_batch_results_writes_markdown_and_json():
         b"<!-- Page 1 -->\n\nOCR output"
     )
     assert json.loads(storage.download_bytes(keys.json_key)) == [
-        {"result": {"text": "OCR output"}, "page_numbers": [1]}
+        {
+            "result": {
+                "markdown": "OCR output",
+                "json": {"text": "OCR output"},
+            },
+            "page_numbers": [1],
+        }
     ]
     assert storage.objects[keys.markdown_key].content_type.startswith(
         "text/markdown"
