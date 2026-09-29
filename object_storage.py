@@ -5,6 +5,7 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote
 
 from config import (
+    MAX_S3_PRESIGNED_URL_TTL_SECONDS,
     STORAGE_ACCESS_KEY_ID,
     STORAGE_BUCKET,
     STORAGE_ENABLED,
@@ -19,12 +20,7 @@ from config import (
 class ObjectStorage(Protocol):
     """Minimal object-storage interface used by the worker."""
 
-    def upload_bytes(
-        self,
-        key: str,
-        data: bytes,
-        content_type: str,
-    ) -> None:
+    def upload_bytes(self, key: str, data: bytes, content_type: str) -> None:
         """Upload bytes and their media type to an object key."""
         ...
 
@@ -84,10 +80,13 @@ class S3ObjectStorage:
         if (
             isinstance(presigned_url_ttl_seconds, bool)
             or not isinstance(presigned_url_ttl_seconds, int)
-            or presigned_url_ttl_seconds <= 0
+            or not 1
+            <= presigned_url_ttl_seconds
+            <= MAX_S3_PRESIGNED_URL_TTL_SECONDS
         ):
             raise ValueError(
-                "presigned_url_ttl_seconds must be a positive integer."
+                "presigned_url_ttl_seconds must be between 1 and "
+                f"{MAX_S3_PRESIGNED_URL_TTL_SECONDS}."
             )
         if bool(access_key_id) != bool(secret_access_key):
             raise ValueError(
@@ -98,11 +97,15 @@ class S3ObjectStorage:
         self.region = region.strip()
         self.endpoint_url = endpoint_url.strip() if endpoint_url else None
         self.presigned_url_ttl_seconds = presigned_url_ttl_seconds
-        self.client = client or self._create_client(
-            region=self.region,
-            endpoint_url=self.endpoint_url,
-            access_key_id=access_key_id,
-            secret_access_key=secret_access_key,
+        self.client = (
+            client
+            if client is not None
+            else self._create_client(
+                region=self.region,
+                endpoint_url=self.endpoint_url,
+                access_key_id=access_key_id,
+                secret_access_key=secret_access_key,
+            )
         )
 
     @staticmethod
@@ -128,12 +131,7 @@ class S3ObjectStorage:
             client_options["aws_secret_access_key"] = secret_access_key
         return boto3.client("s3", **client_options)
 
-    def upload_bytes(
-        self,
-        key: str,
-        data: bytes,
-        content_type: str,
-    ) -> None:
+    def upload_bytes(self, key: str, data: bytes, content_type: str) -> None:
         key = _validate_object_key(key)
         _validate_upload(data, content_type)
         self.client.put_object(
@@ -190,8 +188,6 @@ def create_s3_object_storage() -> S3ObjectStorage:
             "Object storage is disabled; set STORAGE_ENABLED=true to enable it."
         )
     if not STORAGE_BUCKET:
-        # Normally caught by config.py at import, kept here for callers that
-        # monkeypatch configuration or construct this in a long-lived process.
         raise ValueError("STORAGE_BUCKET is required when storage is enabled.")
     return S3ObjectStorage(
         bucket=STORAGE_BUCKET,
@@ -213,17 +209,12 @@ class FakeObjectStorage:
     """In-memory ObjectStorage implementation for unit tests and local flows."""
 
     def __init__(self, bucket: str = "test-bucket") -> None:
-        if not bucket.strip():
-            raise ValueError("Fake storage bucket must not be empty.")
-        self.bucket = bucket
+        if not isinstance(bucket, str) or not bucket.strip():
+            raise ValueError("Fake storage bucket must be a non-empty string.")
+        self.bucket = bucket.strip()
         self.objects: dict[str, StoredObject] = {}
 
-    def upload_bytes(
-        self,
-        key: str,
-        data: bytes,
-        content_type: str,
-    ) -> None:
+    def upload_bytes(self, key: str, data: bytes, content_type: str) -> None:
         key = _validate_object_key(key)
         _validate_upload(data, content_type)
         self.objects[key] = StoredObject(
