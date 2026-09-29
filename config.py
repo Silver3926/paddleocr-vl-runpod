@@ -2,6 +2,9 @@ import os
 import tempfile
 
 
+MAX_S3_PRESIGNED_URL_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
 def get_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -37,9 +40,14 @@ def _optional_env(name: str) -> str | None:
 
 
 def _validate_storage_configuration() -> None:
-    if STORAGE_PRESIGNED_URL_TTL_SECONDS <= 0:
+    if not (
+        1
+        <= STORAGE_PRESIGNED_URL_TTL_SECONDS
+        <= MAX_S3_PRESIGNED_URL_TTL_SECONDS
+    ):
         raise ValueError(
-            "STORAGE_PRESIGNED_URL_TTL_SECONDS must be greater than 0."
+            "STORAGE_PRESIGNED_URL_TTL_SECONDS must be between 1 and "
+            f"{MAX_S3_PRESIGNED_URL_TTL_SECONDS} seconds."
         )
     if bool(STORAGE_ACCESS_KEY_ID) != bool(STORAGE_SECRET_ACCESS_KEY):
         raise ValueError(
@@ -49,6 +57,10 @@ def _validate_storage_configuration() -> None:
     if STORAGE_ENABLED and not STORAGE_BUCKET:
         raise ValueError(
             "STORAGE_BUCKET is required when STORAGE_ENABLED is true."
+        )
+    if STORAGE_ENABLED and not STORAGE_REGION:
+        raise ValueError(
+            "STORAGE_REGION must be non-empty when storage is enabled."
         )
 
 
