@@ -175,7 +175,7 @@ def test_s3_storage_validates_constructor_options():
         S3ObjectStorage(" ", client=FakeS3Client())
     with pytest.raises(ValueError, match="region"):
         S3ObjectStorage("bucket", client=FakeS3Client(), region=" ")
-    with pytest.raises(ValueError, match="positive integer"):
+    with pytest.raises(ValueError, match="between 1 and"):
         S3ObjectStorage(
             "bucket",
             client=FakeS3Client(),
