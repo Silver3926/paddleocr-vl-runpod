@@ -71,7 +71,11 @@ def _json_safe(value: Any) -> Any:
 def _extract_result_json(result: Any) -> Any:
     value = getattr(result, "json", None)
     if callable(value):
-        value = value()
+        try:
+            value = value()
+        except Exception:
+            logger.warning("Unable to extract structured result for batch upload.")
+            value = None
     if value is None and isinstance(result, dict):
         value = result
     if value is None:
